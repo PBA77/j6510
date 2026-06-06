@@ -1469,6 +1469,7 @@ int main() {
     test_run_matches_step_for_e2e_program();
     test_run_block_stops_on_budget_and_control_flow();
     test_run_block_stops_on_illegal_and_interrupt_pending();
+#if J6510_ENABLE_BLOCK_CACHE
     test_run_cached_matches_step_and_tracks_cache_stats();
     test_run_cached_hits_and_invalidates_after_write();
     test_run_cached_ir_mixed_loop_matches_step();
@@ -1478,6 +1479,7 @@ int main() {
     test_run_cached_ir_indexed_loads_match_step();
     test_run_cached_ir_adc_cmp_inc_match_step();
     test_run_cached_realish_stress_matches_step();
+#endif
 
     std::cout << "All j6510 tests passed\n";
     return 0;

@@ -7,6 +7,10 @@
 #include <functional>
 #include <array>
 
+#ifndef J6510_ENABLE_BLOCK_CACHE
+#define J6510_ENABLE_BLOCK_CACHE 1
+#endif
+
 namespace j6510 {
 
 constexpr uint8_t FLAG_C = 0x01;
@@ -128,6 +132,7 @@ private:
     Port6510State port_{};
     std::function<void(uint8_t)> port_changed_callback_{};
     InterruptPollCallback interrupt_poll_callback_{};
+#if J6510_ENABLE_BLOCK_CACHE
     enum class CachedOpKind : uint8_t {
         Fallback,
         LdaImm,
@@ -197,9 +202,12 @@ private:
     std::array<uint16_t, 256> cached_page_use_count_{};
     uint16_t valid_cached_blocks_ = 0;
     BlockCacheStats block_cache_stats_{};
+#endif
 
     uint8_t read(uint16_t address);
     void write(uint16_t address, uint8_t value);
+    void direct_write(uint16_t address, uint8_t value);
+#if J6510_ENABLE_BLOCK_CACHE
     void invalidate_block_cache_for_write(uint16_t address);
     void add_block_to_page_counts(const CachedBlock& block);
     void remove_block_from_page_counts(const CachedBlock& block);
@@ -211,10 +219,10 @@ private:
     bool is_hot_cached_op(CachedOpKind kind) const;
     bool cached_write_is_safe_for_block(const CachedBlock& block, const CachedOp& op) const;
     bool can_use_direct_memory_path() const;
-    void direct_write(uint16_t address, uint8_t value);
     void execute_cached_op(const CachedOp& op);
     void execute_cached_block_direct_hot(const CachedBlock& block, uint32_t to_execute, RunResult& result);
     void execute_cached_block_direct(const CachedBlock& block, uint32_t to_execute, RunResult& result);
+#endif
     uint8_t fetch8();
     uint16_t fetch16();
     uint16_t read16(uint16_t address);

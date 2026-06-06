@@ -6,6 +6,8 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+option(J6510_ENABLE_BLOCK_CACHE "Enable cached-block execution support" ON)
+
 add_library(j6510_core
     src/cpu6510_bus.cpp
     src/cpu6510_core.cpp
@@ -20,6 +22,11 @@ target_include_directories(j6510_core
 target_compile_options(j6510_core
     PRIVATE
         $<$<CXX_COMPILER_ID:AppleClang,Clang,GNU>:-Wall -Wextra -Wpedantic>
+)
+
+target_compile_definitions(j6510_core
+    PUBLIC
+        J6510_ENABLE_BLOCK_CACHE=$<BOOL:${J6510_ENABLE_BLOCK_CACHE}>
 )
 
 enable_testing()
