@@ -357,6 +357,22 @@ StepResult Cpu6510::step() {
     return StepResult::Ok;
 }
 
+RunResult Cpu6510::run(uint32_t max_instructions) {
+    RunResult result{};
+    for (uint32_t i = 0; i < max_instructions; ++i) {
+        const StepResult step_result = step();
+        if (step_result != StepResult::Ok) {
+            result.result = step_result;
+            result.instructions_executed = static_cast<uint32_t>(i + 1);
+            result.stop_pc = state_.pc;
+            return result;
+        }
+    }
+    result.instructions_executed = max_instructions;
+    result.stop_pc = state_.pc;
+    return result;
+}
+
 void Cpu6510::set_port_external_inputs(uint8_t value) {
     port_.external_inputs = value;
 }

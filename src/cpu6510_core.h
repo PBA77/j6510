@@ -51,6 +51,12 @@ enum class StepResult {
     IllegalOpcode,
 };
 
+struct RunResult {
+    StepResult result = StepResult::Ok;
+    uint32_t instructions_executed = 0;
+    uint16_t stop_pc = 0;
+};
+
 class Cpu6510 {
 public:
     explicit Cpu6510(Bus& bus);
@@ -71,6 +77,7 @@ public:
 
     void reset();
     StepResult step();
+    RunResult run(uint32_t max_instructions);
 
     void set_port_external_inputs(uint8_t value);
     void set_port_active_mask(uint8_t mask);

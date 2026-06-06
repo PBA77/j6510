@@ -23,6 +23,15 @@ void run_steps(Cpu6510& cpu, int steps, const std::string& context) {
     }
 }
 
+void require_same_state(const Cpu6510State& lhs, const Cpu6510State& rhs, const std::string& context) {
+    require(lhs.a == rhs.a, context + " A matches");
+    require(lhs.x == rhs.x, context + " X matches");
+    require(lhs.y == rhs.y, context + " Y matches");
+    require(lhs.sp == rhs.sp, context + " SP matches");
+    require(lhs.pc == rhs.pc, context + " PC matches");
+    require(lhs.p == rhs.p, context + " P matches");
+}
+
 void test_reset_loads_pc_from_vector() {
     RamBus bus;
     bus.set_reset_vector(0xC000);
@@ -941,6 +950,53 @@ void test_e2e_memory_driven_branch_program() {
     require(cpu.state().pc == 0x0A12, "not-taken sentinel leaves PC at sentinel address");
 }
 
+void test_run_matches_step_for_e2e_program() {
+    RamBus step_bus;
+    RamBus run_bus;
+    step_bus.set_reset_vector(0x0C00);
+    run_bus.set_reset_vector(0x0C00);
+
+    const uint8_t program[] = {
+        0xA9, 0x10,       // LDA #$10
+        0xAA,             // TAX
+        0xE8,             // INX
+        0x8E, 0x00, 0x43, // STX $4300
+        0xA0, 0x02,       // LDY #$02
+        0x88,             // DEY
+        0xD0, 0xFD,       // BNE $0C09
+        0xAD, 0x00, 0x43, // LDA $4300
+        0x48,             // PHA
+        0xA9, 0x00,       // LDA #$00
+        0x68,             // PLA
+        0x8D, 0x01, 0x43, // STA $4301
+        0x02,             // illegal sentinel
+    };
+    step_bus.load(0x0C00, program, sizeof(program));
+    run_bus.load(0x0C00, program, sizeof(program));
+
+    Cpu6510 step_cpu(step_bus);
+    Cpu6510 run_cpu(run_bus);
+    step_cpu.reset();
+    run_cpu.reset();
+
+    for (int i = 0; i < 14; ++i) {
+        require(step_cpu.step() == StepResult::Ok, "reference step executes before sentinel");
+    }
+    const RunResult run_result = run_cpu.run(14);
+
+    require(run_result.result == StepResult::Ok, "run returns Ok before sentinel");
+    require(run_result.instructions_executed == 14, "run reports executed instruction budget");
+    require_same_state(step_cpu.state(), run_cpu.state(), "run vs step");
+    require(step_bus.memory == run_bus.memory, "run and step produce identical memory");
+
+    require(step_cpu.step() == StepResult::IllegalOpcode, "reference step reaches sentinel");
+    const RunResult illegal_result = run_cpu.run(1);
+    require(illegal_result.result == StepResult::IllegalOpcode, "run reports illegal opcode");
+    require(illegal_result.instructions_executed == 1, "run counts failing instruction");
+    require(illegal_result.stop_pc == run_cpu.state().pc, "run stop_pc matches CPU PC");
+    require_same_state(step_cpu.state(), run_cpu.state(), "run vs step after sentinel");
+}
+
 } // namespace
 
 int main() {
@@ -970,6 +1026,7 @@ int main() {
     test_adc_sbc_binary_and_decimal_smoke();
     test_e2e_program_image_with_vectors_subroutine_and_brk_rti();
     test_e2e_memory_driven_branch_program();
+    test_run_matches_step_for_e2e_program();
 
     std::cout << "All j6510 tests passed\n";
     return 0;
