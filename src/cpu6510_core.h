@@ -15,6 +15,12 @@
 #define J6510_FAST_CODE_ATTR
 #endif
 
+#if defined(__GNUC__) || defined(__clang__)
+#define J6510_UNLIKELY(x) __builtin_expect(!!(x), 0)
+#else
+#define J6510_UNLIKELY(x) (x)
+#endif
+
 namespace j6510 {
 
 constexpr uint8_t FLAG_C = 0x01;
@@ -48,8 +54,14 @@ struct Port6510State {
     uint8_t active_mask = 0x3F;
 };
 
+enum class ExecutionMode {
+    InstructionFast,
+    CycleExact,
+};
+
 struct Cpu6510Config {
     bool port_enabled = true;
+    ExecutionMode execution_mode = ExecutionMode::InstructionFast;
 };
 
 class Cpu6510;
@@ -63,6 +75,13 @@ enum class StepResult {
 struct RunResult {
     StepResult result = StepResult::Ok;
     uint32_t instructions_executed = 0;
+    uint16_t stop_pc = 0;
+};
+
+struct CycleRunResult {
+    StepResult result = StepResult::Ok;
+    uint32_t cycles_executed = 0;
+    uint32_t instructions_completed = 0;
     uint16_t stop_pc = 0;
 };
 
@@ -113,11 +132,14 @@ public:
 
     void reset();
     StepResult step();
+    StepResult tick();
     RunResult run(uint32_t max_instructions);
+    CycleRunResult run_cycles(uint32_t max_cycles);
     BlockRunResult run_block(uint32_t max_instructions);
     J6510_FAST_CODE_ATTR RunResult run_cached(uint32_t max_instructions);
     const BlockCacheStats& block_cache_stats() const;
     void clear_block_cache();
+    uint64_t cycle() const;
 
     void set_port_external_inputs(uint8_t value);
     void set_port_active_mask(uint8_t mask);
@@ -134,6 +156,12 @@ private:
     Cpu6510State state_{};
     InterruptState interrupts_{};
     Port6510State port_{};
+    uint64_t cycle_count_ = 0;
+    uint8_t pending_exact_cycles_ = 0;
+    bool exact_instruction_completed_ = false;
+    bool staged_exact_state_valid_ = false;
+    Cpu6510State staged_exact_state_{};
+    StepResult staged_exact_result_ = StepResult::Ok;
     std::function<void(uint8_t)> port_changed_callback_{};
     InterruptPollCallback interrupt_poll_callback_{};
 #if J6510_ENABLE_BLOCK_CACHE
@@ -266,6 +294,7 @@ private:
     void branch_if(bool condition);
     void interrupt(uint16_t vector, bool break_flag, uint16_t return_pc);
     uint16_t operand_address(AddressingMode mode);
+    StepResult execute_cycle_exact_instruction(uint8_t& cycles);
 };
 
 } // namespace j6510

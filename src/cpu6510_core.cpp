@@ -136,12 +136,24 @@ void Cpu6510::service_pending_interrupt_if_needed() {
 }
 
 void Cpu6510::reset() {
+    pending_exact_cycles_ = 0;
+    exact_instruction_completed_ = false;
+    staged_exact_state_valid_ = false;
+    staged_exact_result_ = StepResult::Ok;
     state_.sp = 0xFD;
     state_.p = FLAG_U | FLAG_I;
     state_.pc = read16(0xFFFC);
 }
 
 StepResult Cpu6510::step() {
+    if (J6510_UNLIKELY(config_.execution_mode == ExecutionMode::CycleExact)) {
+        StepResult result = StepResult::Ok;
+        do {
+            result = tick();
+        } while (result == StepResult::Ok && !exact_instruction_completed_);
+        return result;
+    }
+
     if (interrupt_poll_callback_ || interrupts_.reset_pending || interrupts_.nmi_pending || interrupts_.irq_level) {
         poll_target_interrupts();
         service_pending_interrupt_if_needed();
@@ -424,6 +436,45 @@ StepResult Cpu6510::step() {
     return StepResult::Ok;
 }
 
+StepResult Cpu6510::tick() {
+    exact_instruction_completed_ = false;
+    if (pending_exact_cycles_ > 0) {
+        --pending_exact_cycles_;
+        ++cycle_count_;
+        exact_instruction_completed_ = pending_exact_cycles_ == 0;
+        if (exact_instruction_completed_ && staged_exact_state_valid_) {
+            state_ = staged_exact_state_;
+            staged_exact_state_valid_ = false;
+            return staged_exact_result_;
+        }
+        return StepResult::Ok;
+    }
+
+    if (config_.execution_mode != ExecutionMode::CycleExact) {
+        const StepResult result = step();
+        ++cycle_count_;
+        exact_instruction_completed_ = true;
+        return result;
+    }
+
+    uint8_t cycles = 0;
+    const Cpu6510State state_before = state_;
+    const StepResult result = execute_cycle_exact_instruction(cycles);
+    if (cycles == 0) {
+        cycles = 1;
+    }
+    if (cycles > 1 && result == StepResult::Ok) {
+        staged_exact_state_ = state_;
+        staged_exact_state_valid_ = true;
+        staged_exact_result_ = result;
+        state_ = state_before;
+    }
+    pending_exact_cycles_ = static_cast<uint8_t>(cycles - 1);
+    ++cycle_count_;
+    exact_instruction_completed_ = pending_exact_cycles_ == 0;
+    return result;
+}
+
 RunResult Cpu6510::run(uint32_t max_instructions) {
     RunResult result{};
     const bool fast_path = can_use_fast_run_path();
@@ -440,6 +491,24 @@ RunResult Cpu6510::run(uint32_t max_instructions) {
         }
     }
     result.instructions_executed = max_instructions;
+    result.stop_pc = state_.pc;
+    return result;
+}
+
+CycleRunResult Cpu6510::run_cycles(uint32_t max_cycles) {
+    CycleRunResult result{};
+    for (uint32_t i = 0; i < max_cycles; ++i) {
+        const StepResult tick_result = tick();
+        result.cycles_executed = static_cast<uint32_t>(i + 1);
+        result.stop_pc = state_.pc;
+        if (exact_instruction_completed_) {
+            ++result.instructions_completed;
+        }
+        if (tick_result != StepResult::Ok) {
+            result.result = tick_result;
+            return result;
+        }
+    }
     result.stop_pc = state_.pc;
     return result;
 }
@@ -495,6 +564,10 @@ void Cpu6510::clear_block_cache() {
     cached_page_use_count_.fill(0);
     valid_cached_blocks_ = 0;
 #endif
+}
+
+uint64_t Cpu6510::cycle() const {
+    return cycle_count_;
 }
 
 BlockRunResult Cpu6510::run_block(uint32_t max_instructions) {
@@ -2239,6 +2312,588 @@ uint16_t Cpu6510::operand_address(AddressingMode mode) {
         return 0;
     }
     return 0;
+}
+
+StepResult Cpu6510::execute_cycle_exact_instruction(uint8_t& cycles) {
+    cycles = 0;
+    const auto bus_read = [this, &cycles](uint16_t address) {
+        ++cycles;
+        return read(address);
+    };
+    const auto bus_write = [this, &cycles](uint16_t address, uint8_t value) {
+        ++cycles;
+        write(address, value);
+    };
+    const auto stack_read = [&bus_read](uint8_t sp) {
+        return bus_read(static_cast<uint16_t>(0x0100 | sp));
+    };
+    const auto stack_write = [this, &bus_write](uint8_t value) {
+        bus_write(static_cast<uint16_t>(0x0100 | state_.sp), value);
+        state_.sp = static_cast<uint8_t>(state_.sp - 1);
+    };
+    const auto stack_pull = [this, &bus_read]() {
+        state_.sp = static_cast<uint8_t>(state_.sp + 1);
+        return bus_read(static_cast<uint16_t>(0x0100 | state_.sp));
+    };
+    const auto read16_at = [&bus_read](uint16_t address) {
+        const uint8_t low = bus_read(address);
+        const uint8_t high = bus_read(static_cast<uint16_t>(address + 1));
+        return static_cast<uint16_t>((high << 8) | low);
+    };
+    const auto read16_zp_at = [&bus_read](uint8_t address) {
+        const uint8_t low = bus_read(address);
+        const uint8_t high = bus_read(static_cast<uint8_t>(address + 1));
+        return static_cast<uint16_t>((high << 8) | low);
+    };
+    const auto read16_nmos_at = [&bus_read](uint16_t address) {
+        const uint8_t low = bus_read(address);
+        const uint16_t high_address = static_cast<uint16_t>((address & 0xFF00) | static_cast<uint8_t>(address + 1));
+        const uint8_t high = bus_read(high_address);
+        return static_cast<uint16_t>((high << 8) | low);
+    };
+    const auto dummy_to = [&bus_read](uint16_t address) {
+        (void)bus_read(address);
+    };
+    const auto same_page = [](uint16_t lhs, uint16_t rhs) {
+        return (lhs & 0xFF00) == (rhs & 0xFF00);
+    };
+    const auto wrong_indexed_address = [](uint16_t base, uint8_t index) {
+        return static_cast<uint16_t>((base & 0xFF00) | static_cast<uint8_t>(base + index));
+    };
+
+    if (interrupt_poll_callback_ || interrupts_.reset_pending || interrupts_.nmi_pending || interrupts_.irq_level) {
+        poll_target_interrupts();
+        if (interrupts_.reset_pending) {
+            interrupts_.reset_pending = false;
+            state_.sp = 0xFD;
+            state_.p = FLAG_U | FLAG_I;
+            dummy_to(state_.pc);
+            dummy_to(state_.pc);
+            dummy_to(static_cast<uint16_t>(0x0100 | state_.sp));
+            dummy_to(static_cast<uint16_t>(0x0100 | state_.sp));
+            dummy_to(static_cast<uint16_t>(0x0100 | state_.sp));
+            state_.pc = read16_at(0xFFFC);
+            return StepResult::Ok;
+        }
+        if (interrupts_.nmi_pending) {
+            interrupts_.nmi_pending = false;
+            dummy_to(state_.pc);
+            dummy_to(state_.pc);
+            stack_write(static_cast<uint8_t>(state_.pc >> 8));
+            stack_write(static_cast<uint8_t>(state_.pc & 0x00FF));
+            stack_write(static_cast<uint8_t>(state_.p | FLAG_U));
+            set_flag(FLAG_I, true);
+            state_.pc = read16_at(0xFFFA);
+            return StepResult::Ok;
+        }
+        if (interrupts_.irq_level && !flag(FLAG_I)) {
+            dummy_to(state_.pc);
+            dummy_to(state_.pc);
+            stack_write(static_cast<uint8_t>(state_.pc >> 8));
+            stack_write(static_cast<uint8_t>(state_.pc & 0x00FF));
+            stack_write(static_cast<uint8_t>(state_.p | FLAG_U));
+            set_flag(FLAG_I, true);
+            state_.pc = read16_at(0xFFFE);
+            return StepResult::Ok;
+        }
+    }
+
+    const uint16_t instruction_pc = state_.pc;
+    const uint8_t opcode = bus_read(state_.pc++);
+    const OpcodeInfo& info = opcode_info(opcode);
+    if (info.operation == Operation::Illegal) {
+        state_.pc = instruction_pc;
+        return StepResult::IllegalOpcode;
+    }
+
+    const auto read_operand_exact = [&](AddressingMode mode, uint16_t& address) {
+        address = 0;
+        switch (mode) {
+        case AddressingMode::Accumulator:
+            dummy_to(state_.pc);
+            return state_.a;
+        case AddressingMode::Immediate:
+            address = state_.pc++;
+            return bus_read(address);
+        case AddressingMode::ZeroPage:
+            address = bus_read(state_.pc++);
+            return bus_read(address);
+        case AddressingMode::ZeroPageX: {
+            const uint8_t base = bus_read(state_.pc++);
+            dummy_to(base);
+            address = static_cast<uint8_t>(base + state_.x);
+            return bus_read(address);
+        }
+        case AddressingMode::ZeroPageY: {
+            const uint8_t base = bus_read(state_.pc++);
+            dummy_to(base);
+            address = static_cast<uint8_t>(base + state_.y);
+            return bus_read(address);
+        }
+        case AddressingMode::Absolute:
+            address = read16_at(state_.pc);
+            state_.pc = static_cast<uint16_t>(state_.pc + 2);
+            return bus_read(address);
+        case AddressingMode::AbsoluteX: {
+            const uint16_t base = read16_at(state_.pc);
+            state_.pc = static_cast<uint16_t>(state_.pc + 2);
+            address = static_cast<uint16_t>(base + state_.x);
+            if (!same_page(base, address)) {
+                dummy_to(wrong_indexed_address(base, state_.x));
+            }
+            return bus_read(address);
+        }
+        case AddressingMode::AbsoluteY: {
+            const uint16_t base = read16_at(state_.pc);
+            state_.pc = static_cast<uint16_t>(state_.pc + 2);
+            address = static_cast<uint16_t>(base + state_.y);
+            if (!same_page(base, address)) {
+                dummy_to(wrong_indexed_address(base, state_.y));
+            }
+            return bus_read(address);
+        }
+        case AddressingMode::IndexedIndirect: {
+            const uint8_t operand = bus_read(state_.pc++);
+            dummy_to(operand);
+            address = read16_zp_at(static_cast<uint8_t>(operand + state_.x));
+            return bus_read(address);
+        }
+        case AddressingMode::IndirectIndexed: {
+            const uint8_t operand = bus_read(state_.pc++);
+            const uint16_t base = read16_zp_at(operand);
+            address = static_cast<uint16_t>(base + state_.y);
+            if (!same_page(base, address)) {
+                dummy_to(wrong_indexed_address(base, state_.y));
+            }
+            return bus_read(address);
+        }
+        case AddressingMode::Implied:
+        case AddressingMode::Relative:
+        case AddressingMode::Indirect:
+            dummy_to(state_.pc);
+            return uint8_t{0};
+        }
+        dummy_to(state_.pc);
+        return uint8_t{0};
+    };
+
+    const auto write_operand_exact = [&](AddressingMode mode, uint8_t value) {
+        switch (mode) {
+        case AddressingMode::ZeroPage: {
+            const uint8_t address = bus_read(state_.pc++);
+            bus_write(address, value);
+            return;
+        }
+        case AddressingMode::ZeroPageX: {
+            const uint8_t base = bus_read(state_.pc++);
+            dummy_to(base);
+            bus_write(static_cast<uint8_t>(base + state_.x), value);
+            return;
+        }
+        case AddressingMode::ZeroPageY: {
+            const uint8_t base = bus_read(state_.pc++);
+            dummy_to(base);
+            bus_write(static_cast<uint8_t>(base + state_.y), value);
+            return;
+        }
+        case AddressingMode::Absolute: {
+            const uint16_t address = read16_at(state_.pc);
+            state_.pc = static_cast<uint16_t>(state_.pc + 2);
+            bus_write(address, value);
+            return;
+        }
+        case AddressingMode::AbsoluteX: {
+            const uint16_t base = read16_at(state_.pc);
+            state_.pc = static_cast<uint16_t>(state_.pc + 2);
+            dummy_to(wrong_indexed_address(base, state_.x));
+            bus_write(static_cast<uint16_t>(base + state_.x), value);
+            return;
+        }
+        case AddressingMode::AbsoluteY: {
+            const uint16_t base = read16_at(state_.pc);
+            state_.pc = static_cast<uint16_t>(state_.pc + 2);
+            dummy_to(wrong_indexed_address(base, state_.y));
+            bus_write(static_cast<uint16_t>(base + state_.y), value);
+            return;
+        }
+        case AddressingMode::IndexedIndirect: {
+            const uint8_t operand = bus_read(state_.pc++);
+            dummy_to(operand);
+            const uint16_t address = read16_zp_at(static_cast<uint8_t>(operand + state_.x));
+            bus_write(address, value);
+            return;
+        }
+        case AddressingMode::IndirectIndexed: {
+            const uint8_t operand = bus_read(state_.pc++);
+            const uint16_t base = read16_zp_at(operand);
+            dummy_to(wrong_indexed_address(base, state_.y));
+            bus_write(static_cast<uint16_t>(base + state_.y), value);
+            return;
+        }
+        case AddressingMode::Accumulator:
+            dummy_to(state_.pc);
+            state_.a = value;
+            return;
+        case AddressingMode::Immediate:
+        case AddressingMode::Implied:
+        case AddressingMode::Relative:
+        case AddressingMode::Indirect:
+            dummy_to(state_.pc);
+            return;
+        }
+    };
+
+    const auto rmw_operand_exact = [&](AddressingMode mode, auto transform) {
+        if (mode == AddressingMode::Accumulator) {
+            dummy_to(state_.pc);
+            state_.a = transform(state_.a);
+            set_zn(state_.a);
+            return;
+        }
+
+        uint16_t address = 0;
+        switch (mode) {
+        case AddressingMode::ZeroPage:
+            address = bus_read(state_.pc++);
+            break;
+        case AddressingMode::ZeroPageX: {
+            const uint8_t base = bus_read(state_.pc++);
+            dummy_to(base);
+            address = static_cast<uint8_t>(base + state_.x);
+            break;
+        }
+        case AddressingMode::Absolute:
+            address = read16_at(state_.pc);
+            state_.pc = static_cast<uint16_t>(state_.pc + 2);
+            break;
+        case AddressingMode::AbsoluteX: {
+            const uint16_t base = read16_at(state_.pc);
+            state_.pc = static_cast<uint16_t>(state_.pc + 2);
+            dummy_to(wrong_indexed_address(base, state_.x));
+            address = static_cast<uint16_t>(base + state_.x);
+            break;
+        }
+        default:
+            dummy_to(state_.pc);
+            break;
+        }
+        const uint8_t old_value = bus_read(address);
+        bus_write(address, old_value);
+        const uint8_t new_value = transform(old_value);
+        bus_write(address, new_value);
+        set_zn(new_value);
+    };
+
+    switch (info.operation) {
+    case Operation::LDA: {
+        uint16_t address = 0;
+        state_.a = read_operand_exact(info.mode, address);
+        set_zn(state_.a);
+        break;
+    }
+    case Operation::LDX: {
+        uint16_t address = 0;
+        state_.x = read_operand_exact(info.mode, address);
+        set_zn(state_.x);
+        break;
+    }
+    case Operation::LDY: {
+        uint16_t address = 0;
+        state_.y = read_operand_exact(info.mode, address);
+        set_zn(state_.y);
+        break;
+    }
+    case Operation::STA:
+        write_operand_exact(info.mode, state_.a);
+        break;
+    case Operation::STX:
+        write_operand_exact(info.mode, state_.x);
+        break;
+    case Operation::STY:
+        write_operand_exact(info.mode, state_.y);
+        break;
+    case Operation::AND: {
+        uint16_t address = 0;
+        state_.a = static_cast<uint8_t>(state_.a & read_operand_exact(info.mode, address));
+        set_zn(state_.a);
+        break;
+    }
+    case Operation::ORA: {
+        uint16_t address = 0;
+        state_.a = static_cast<uint8_t>(state_.a | read_operand_exact(info.mode, address));
+        set_zn(state_.a);
+        break;
+    }
+    case Operation::EOR: {
+        uint16_t address = 0;
+        state_.a = static_cast<uint8_t>(state_.a ^ read_operand_exact(info.mode, address));
+        set_zn(state_.a);
+        break;
+    }
+    case Operation::BIT: {
+        uint16_t address = 0;
+        const uint8_t value = read_operand_exact(info.mode, address);
+        set_flag(FLAG_Z, (state_.a & value) == 0);
+        set_flag(FLAG_N, (value & FLAG_N) != 0);
+        set_flag(FLAG_V, (value & FLAG_V) != 0);
+        break;
+    }
+    case Operation::ADC: {
+        uint16_t address = 0;
+        adc(read_operand_exact(info.mode, address));
+        break;
+    }
+    case Operation::SBC: {
+        uint16_t address = 0;
+        sbc(read_operand_exact(info.mode, address));
+        break;
+    }
+    case Operation::CMP: {
+        uint16_t address = 0;
+        compare(state_.a, read_operand_exact(info.mode, address));
+        break;
+    }
+    case Operation::CPX: {
+        uint16_t address = 0;
+        compare(state_.x, read_operand_exact(info.mode, address));
+        break;
+    }
+    case Operation::CPY: {
+        uint16_t address = 0;
+        compare(state_.y, read_operand_exact(info.mode, address));
+        break;
+    }
+    case Operation::INC:
+        rmw_operand_exact(info.mode, [](uint8_t value) { return static_cast<uint8_t>(value + 1); });
+        break;
+    case Operation::DEC:
+        rmw_operand_exact(info.mode, [](uint8_t value) { return static_cast<uint8_t>(value - 1); });
+        break;
+    case Operation::ASL:
+        rmw_operand_exact(info.mode, [this](uint8_t value) {
+            set_flag(FLAG_C, (value & 0x80) != 0);
+            return static_cast<uint8_t>(value << 1);
+        });
+        break;
+    case Operation::LSR:
+        rmw_operand_exact(info.mode, [this](uint8_t value) {
+            set_flag(FLAG_C, (value & 0x01) != 0);
+            return static_cast<uint8_t>(value >> 1);
+        });
+        break;
+    case Operation::ROL:
+        rmw_operand_exact(info.mode, [this](uint8_t value) {
+            const uint8_t result = static_cast<uint8_t>((value << 1) | (flag(FLAG_C) ? 1 : 0));
+            set_flag(FLAG_C, (value & 0x80) != 0);
+            return result;
+        });
+        break;
+    case Operation::ROR:
+        rmw_operand_exact(info.mode, [this](uint8_t value) {
+            const uint8_t result = static_cast<uint8_t>((value >> 1) | (flag(FLAG_C) ? 0x80 : 0));
+            set_flag(FLAG_C, (value & 0x01) != 0);
+            return result;
+        });
+        break;
+    case Operation::TAX:
+        dummy_to(state_.pc);
+        state_.x = state_.a;
+        set_zn(state_.x);
+        break;
+    case Operation::TAY:
+        dummy_to(state_.pc);
+        state_.y = state_.a;
+        set_zn(state_.y);
+        break;
+    case Operation::TXA:
+        dummy_to(state_.pc);
+        state_.a = state_.x;
+        set_zn(state_.a);
+        break;
+    case Operation::TYA:
+        dummy_to(state_.pc);
+        state_.a = state_.y;
+        set_zn(state_.a);
+        break;
+    case Operation::TSX:
+        dummy_to(state_.pc);
+        state_.x = state_.sp;
+        set_zn(state_.x);
+        break;
+    case Operation::TXS:
+        dummy_to(state_.pc);
+        state_.sp = state_.x;
+        break;
+    case Operation::INX:
+        dummy_to(state_.pc);
+        state_.x = static_cast<uint8_t>(state_.x + 1);
+        set_zn(state_.x);
+        break;
+    case Operation::INY:
+        dummy_to(state_.pc);
+        state_.y = static_cast<uint8_t>(state_.y + 1);
+        set_zn(state_.y);
+        break;
+    case Operation::DEX:
+        dummy_to(state_.pc);
+        state_.x = static_cast<uint8_t>(state_.x - 1);
+        set_zn(state_.x);
+        break;
+    case Operation::DEY:
+        dummy_to(state_.pc);
+        state_.y = static_cast<uint8_t>(state_.y - 1);
+        set_zn(state_.y);
+        break;
+    case Operation::PHA:
+        dummy_to(state_.pc);
+        stack_write(state_.a);
+        break;
+    case Operation::PHP:
+        dummy_to(state_.pc);
+        stack_write(static_cast<uint8_t>(state_.p | FLAG_B | FLAG_U));
+        break;
+    case Operation::PLA:
+        dummy_to(state_.pc);
+        (void)stack_read(static_cast<uint8_t>(state_.sp + 1));
+        state_.a = stack_pull();
+        set_zn(state_.a);
+        break;
+    case Operation::PLP:
+        dummy_to(state_.pc);
+        (void)stack_read(static_cast<uint8_t>(state_.sp + 1));
+        state_.p = normalized_p(stack_pull());
+        break;
+    case Operation::CLC:
+        dummy_to(state_.pc);
+        set_flag(FLAG_C, false);
+        break;
+    case Operation::SEC:
+        dummy_to(state_.pc);
+        set_flag(FLAG_C, true);
+        break;
+    case Operation::CLI:
+        dummy_to(state_.pc);
+        set_flag(FLAG_I, false);
+        break;
+    case Operation::SEI:
+        dummy_to(state_.pc);
+        set_flag(FLAG_I, true);
+        break;
+    case Operation::CLV:
+        dummy_to(state_.pc);
+        set_flag(FLAG_V, false);
+        break;
+    case Operation::CLD:
+        dummy_to(state_.pc);
+        set_flag(FLAG_D, false);
+        break;
+    case Operation::SED:
+        dummy_to(state_.pc);
+        set_flag(FLAG_D, true);
+        break;
+    case Operation::JMP:
+        if (info.mode == AddressingMode::Indirect) {
+            const uint16_t pointer = read16_at(state_.pc);
+            state_.pc = read16_nmos_at(pointer);
+        } else {
+            state_.pc = read16_at(state_.pc);
+        }
+        break;
+    case Operation::JSR: {
+        const uint8_t low = bus_read(state_.pc++);
+        dummy_to(static_cast<uint16_t>(0x0100 | state_.sp));
+        const uint8_t high = bus_read(state_.pc++);
+        const uint16_t return_address = static_cast<uint16_t>(state_.pc - 1);
+        stack_write(static_cast<uint8_t>(return_address >> 8));
+        stack_write(static_cast<uint8_t>(return_address & 0x00FF));
+        state_.pc = static_cast<uint16_t>((high << 8) | low);
+        break;
+    }
+    case Operation::RTS: {
+        dummy_to(state_.pc);
+        (void)stack_read(static_cast<uint8_t>(state_.sp + 1));
+        const uint8_t low = stack_pull();
+        const uint8_t high = stack_pull();
+        state_.pc = static_cast<uint16_t>((high << 8) | low);
+        dummy_to(state_.pc);
+        state_.pc = static_cast<uint16_t>(state_.pc + 1);
+        break;
+    }
+    case Operation::BRK:
+        (void)bus_read(state_.pc++);
+        stack_write(static_cast<uint8_t>(state_.pc >> 8));
+        stack_write(static_cast<uint8_t>(state_.pc & 0x00FF));
+        stack_write(static_cast<uint8_t>(state_.p | FLAG_B | FLAG_U));
+        set_flag(FLAG_I, true);
+        state_.pc = read16_at(0xFFFE);
+        break;
+    case Operation::RTI: {
+        dummy_to(state_.pc);
+        (void)stack_read(static_cast<uint8_t>(state_.sp + 1));
+        state_.p = normalized_p(stack_pull());
+        const uint8_t low = stack_pull();
+        const uint8_t high = stack_pull();
+        state_.pc = static_cast<uint16_t>((high << 8) | low);
+        break;
+    }
+    case Operation::NOP:
+        dummy_to(state_.pc);
+        break;
+    case Operation::BPL:
+    case Operation::BMI:
+    case Operation::BVC:
+    case Operation::BVS:
+    case Operation::BCC:
+    case Operation::BCS:
+    case Operation::BNE:
+    case Operation::BEQ: {
+        const int8_t offset = static_cast<int8_t>(bus_read(state_.pc++));
+        bool condition = false;
+        switch (info.operation) {
+        case Operation::BPL:
+            condition = !flag(FLAG_N);
+            break;
+        case Operation::BMI:
+            condition = flag(FLAG_N);
+            break;
+        case Operation::BVC:
+            condition = !flag(FLAG_V);
+            break;
+        case Operation::BVS:
+            condition = flag(FLAG_V);
+            break;
+        case Operation::BCC:
+            condition = !flag(FLAG_C);
+            break;
+        case Operation::BCS:
+            condition = flag(FLAG_C);
+            break;
+        case Operation::BNE:
+            condition = !flag(FLAG_Z);
+            break;
+        case Operation::BEQ:
+            condition = flag(FLAG_Z);
+            break;
+        default:
+            break;
+        }
+        if (condition) {
+            const uint16_t old_pc = state_.pc;
+            const uint16_t new_pc = static_cast<uint16_t>(state_.pc + offset);
+            dummy_to(state_.pc);
+            if (!same_page(old_pc, new_pc)) {
+                dummy_to(static_cast<uint16_t>((old_pc & 0xFF00) | (new_pc & 0x00FF)));
+            }
+            state_.pc = new_pc;
+        }
+        break;
+    }
+    case Operation::Illegal:
+        state_.pc = instruction_pc;
+        return StepResult::IllegalOpcode;
+    }
+
+    return StepResult::Ok;
 }
 
 } // namespace j6510

@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -30,6 +31,47 @@ void require_same_state(const Cpu6510State& lhs, const Cpu6510State& rhs, const 
     require(lhs.sp == rhs.sp, context + " SP matches");
     require(lhs.pc == rhs.pc, context + " PC matches");
     require(lhs.p == rhs.p, context + " P matches");
+}
+
+struct BusEvent {
+    char type = 'R';
+    uint16_t address = 0;
+    uint8_t value = 0;
+};
+
+class SpyBus final : public Bus {
+public:
+    uint8_t read(uint16_t address) override {
+        const uint8_t value = memory[address];
+        events.push_back(BusEvent{'R', address, value});
+        return value;
+    }
+
+    void write(uint16_t address, uint8_t value) override {
+        memory[address] = value;
+        events.push_back(BusEvent{'W', address, value});
+    }
+
+    void load(uint16_t start, const uint8_t* data, uint16_t size) {
+        for (uint16_t i = 0; i < size; ++i) {
+            memory[static_cast<uint16_t>(start + i)] = data[i];
+        }
+    }
+
+    void set_reset_vector(uint16_t address) {
+        memory[0xFFFC] = static_cast<uint8_t>(address & 0x00FF);
+        memory[0xFFFD] = static_cast<uint8_t>(address >> 8);
+    }
+
+    std::array<uint8_t, 65536> memory{};
+    std::vector<BusEvent> events;
+};
+
+void require_event(const std::vector<BusEvent>& events, size_t index, char type, uint16_t address, uint8_t value, const std::string& context) {
+    require(index < events.size(), context + " has event " + std::to_string(index));
+    require(events[index].type == type, context + " event type " + std::to_string(index));
+    require(events[index].address == address, context + " event address " + std::to_string(index));
+    require(events[index].value == value, context + " event value " + std::to_string(index));
 }
 
 void load_realish_program(RamBus& bus, uint16_t address) {
@@ -1437,6 +1479,220 @@ void test_run_cached_realish_stress_matches_step() {
     require(cached_cpu.block_cache_stats().hits > 0, "run_cached realish stress records cache hits");
 }
 
+void test_cycle_exact_fixed_instruction_cycles() {
+    const auto run_single = [](const uint8_t* program, uint16_t size, uint16_t pc, int expected_cycles, const std::string& context) {
+        RamBus bus;
+        bus.set_reset_vector(pc);
+        bus.load(pc, program, size);
+        Cpu6510 cpu(bus, Cpu6510Config{false, ExecutionMode::CycleExact});
+        cpu.reset();
+        const uint64_t before = cpu.cycle();
+        require(cpu.step() == StepResult::Ok, context + " executes");
+        require(cpu.cycle() - before == static_cast<uint64_t>(expected_cycles), context + " cycle count");
+        return bus;
+    };
+
+    {
+        const uint8_t program[] = {0xA9, 0x44}; // LDA #$44
+        run_single(program, sizeof(program), 0x0200, 2, "cycle exact LDA immediate");
+    }
+    {
+        const uint8_t program[] = {0x8D, 0x00, 0x30}; // STA $3000
+        RamBus bus;
+        bus.set_reset_vector(0x0200);
+        bus.load(0x0200, program, sizeof(program));
+        Cpu6510 cpu(bus, Cpu6510Config{false, ExecutionMode::CycleExact});
+        cpu.reset();
+        cpu.state().a = 0x5A;
+        require(cpu.step() == StepResult::Ok, "cycle exact STA absolute executes");
+        require(cpu.cycle() == 4, "cycle exact STA absolute cycle count");
+        require(bus.memory[0x3000] == 0x5A, "cycle exact STA absolute writes memory");
+    }
+    {
+        const uint8_t program[] = {0xE6, 0x10}; // INC $10
+        RamBus bus;
+        bus.set_reset_vector(0x0200);
+        bus.load(0x0200, program, sizeof(program));
+        bus.memory[0x0010] = 0x7F;
+        Cpu6510 cpu(bus, Cpu6510Config{false, ExecutionMode::CycleExact});
+        cpu.reset();
+        require(cpu.step() == StepResult::Ok, "cycle exact INC zero page executes");
+        require(cpu.cycle() == 5, "cycle exact INC zero page cycle count");
+        require(bus.memory[0x0010] == 0x80, "cycle exact INC zero page writes incremented value");
+    }
+    {
+        const uint8_t program[] = {0x0E, 0x00, 0x30}; // ASL $3000
+        RamBus bus;
+        bus.set_reset_vector(0x0200);
+        bus.load(0x0200, program, sizeof(program));
+        bus.memory[0x3000] = 0x80;
+        Cpu6510 cpu(bus, Cpu6510Config{false, ExecutionMode::CycleExact});
+        cpu.reset();
+        require(cpu.step() == StepResult::Ok, "cycle exact ASL absolute executes");
+        require(cpu.cycle() == 6, "cycle exact ASL absolute cycle count");
+        require(bus.memory[0x3000] == 0x00, "cycle exact ASL absolute writes shifted value");
+        require((cpu.state().p & FLAG_C) != 0, "cycle exact ASL absolute sets carry");
+    }
+    {
+        RamBus bus;
+        bus.set_reset_vector(0x0200);
+        const uint8_t main_program[] = {0x20, 0x10, 0x02}; // JSR $0210
+        bus.load(0x0200, main_program, sizeof(main_program));
+        bus.memory[0x0210] = 0x60; // RTS
+        Cpu6510 cpu(bus, Cpu6510Config{false, ExecutionMode::CycleExact});
+        cpu.reset();
+        require(cpu.step() == StepResult::Ok, "cycle exact JSR executes");
+        require(cpu.cycle() == 6, "cycle exact JSR cycle count");
+        require(cpu.state().pc == 0x0210, "cycle exact JSR jumps");
+        require(cpu.step() == StepResult::Ok, "cycle exact RTS executes");
+        require(cpu.cycle() == 12, "cycle exact RTS cycle count");
+        require(cpu.state().pc == 0x0203, "cycle exact RTS returns");
+    }
+    {
+        RamBus bus;
+        bus.set_reset_vector(0x0200);
+        bus.set_irq_brk_vector(0x0300);
+        bus.memory[0x0200] = 0x00; // BRK
+        bus.memory[0x0201] = 0xEA;
+        bus.memory[0x0300] = 0x40; // RTI
+        Cpu6510 cpu(bus, Cpu6510Config{false, ExecutionMode::CycleExact});
+        cpu.reset();
+        cpu.state().p = FLAG_U;
+        require(cpu.step() == StepResult::Ok, "cycle exact BRK executes");
+        require(cpu.cycle() == 7, "cycle exact BRK cycle count");
+        require(cpu.state().pc == 0x0300, "cycle exact BRK vectors");
+        require(cpu.step() == StepResult::Ok, "cycle exact RTI executes");
+        require(cpu.cycle() == 13, "cycle exact RTI cycle count");
+        require(cpu.state().pc == 0x0202, "cycle exact RTI restores PC");
+    }
+    {
+        RamBus bus;
+        bus.set_reset_vector(0x0200);
+        const uint8_t program[] = {0x6C, 0xFF, 0x30}; // JMP ($30FF)
+        bus.load(0x0200, program, sizeof(program));
+        bus.memory[0x30FF] = 0x34;
+        bus.memory[0x3000] = 0x12;
+        Cpu6510 cpu(bus, Cpu6510Config{false, ExecutionMode::CycleExact});
+        cpu.reset();
+        require(cpu.step() == StepResult::Ok, "cycle exact JMP indirect executes");
+        require(cpu.cycle() == 5, "cycle exact JMP indirect cycle count");
+        require(cpu.state().pc == 0x1234, "cycle exact JMP indirect keeps NMOS page wrap bug");
+    }
+}
+
+void test_cycle_exact_variable_cycles() {
+    {
+        RamBus bus;
+        bus.set_reset_vector(0x0200);
+        const uint8_t program[] = {0xD0, 0x02}; // BNE
+        bus.load(0x0200, program, sizeof(program));
+        Cpu6510 cpu(bus, Cpu6510Config{false, ExecutionMode::CycleExact});
+        cpu.reset();
+        cpu.state().p = FLAG_U | FLAG_Z;
+        require(cpu.step() == StepResult::Ok, "cycle exact branch not taken executes");
+        require(cpu.cycle() == 2, "cycle exact branch not taken cycles");
+        require(cpu.state().pc == 0x0202, "cycle exact branch not taken PC");
+    }
+    {
+        RamBus bus;
+        bus.set_reset_vector(0x0200);
+        const uint8_t program[] = {0xD0, 0x02}; // BNE $0204
+        bus.load(0x0200, program, sizeof(program));
+        Cpu6510 cpu(bus, Cpu6510Config{false, ExecutionMode::CycleExact});
+        cpu.reset();
+        cpu.state().p = FLAG_U;
+        require(cpu.step() == StepResult::Ok, "cycle exact branch same-page executes");
+        require(cpu.cycle() == 3, "cycle exact branch same-page cycles");
+        require(cpu.state().pc == 0x0204, "cycle exact branch same-page PC");
+    }
+    {
+        RamBus bus;
+        bus.set_reset_vector(0x02FD);
+        const uint8_t program[] = {0xD0, 0x01}; // after operand PC is $02FF, target $0300
+        bus.load(0x02FD, program, sizeof(program));
+        Cpu6510 cpu(bus, Cpu6510Config{false, ExecutionMode::CycleExact});
+        cpu.reset();
+        cpu.state().p = FLAG_U;
+        require(cpu.step() == StepResult::Ok, "cycle exact branch page-cross executes");
+        require(cpu.cycle() == 4, "cycle exact branch page-cross cycles");
+        require(cpu.state().pc == 0x0300, "cycle exact branch page-cross PC");
+    }
+    {
+        RamBus bus;
+        bus.set_reset_vector(0x0200);
+        const uint8_t program[] = {0xBD, 0x00, 0x30, 0xBD, 0xFF, 0x30}; // LDA abs,X twice
+        bus.load(0x0200, program, sizeof(program));
+        bus.memory[0x3001] = 0x11;
+        bus.memory[0x3100] = 0x22;
+        Cpu6510 cpu(bus, Cpu6510Config{false, ExecutionMode::CycleExact});
+        cpu.reset();
+        cpu.state().x = 0x01;
+        require(cpu.step() == StepResult::Ok, "cycle exact LDA abs,X same-page executes");
+        require(cpu.cycle() == 4, "cycle exact LDA abs,X same-page cycles");
+        require(cpu.state().a == 0x11, "cycle exact LDA abs,X same-page value");
+        require(cpu.step() == StepResult::Ok, "cycle exact LDA abs,X page-cross executes");
+        require(cpu.cycle() == 9, "cycle exact LDA abs,X page-cross cycles");
+        require(cpu.state().a == 0x22, "cycle exact LDA abs,X page-cross value");
+    }
+    {
+        RamBus bus;
+        bus.set_reset_vector(0x0200);
+        const uint8_t program[] = {0xB1, 0x20, 0xB1, 0x22}; // LDA ($20),Y twice
+        bus.load(0x0200, program, sizeof(program));
+        bus.memory[0x0020] = 0x00;
+        bus.memory[0x0021] = 0x40;
+        bus.memory[0x0022] = 0xFF;
+        bus.memory[0x0023] = 0x40;
+        bus.memory[0x4001] = 0x33;
+        bus.memory[0x4100] = 0x44;
+        Cpu6510 cpu(bus, Cpu6510Config{false, ExecutionMode::CycleExact});
+        cpu.reset();
+        cpu.state().y = 0x01;
+        require(cpu.step() == StepResult::Ok, "cycle exact LDA (zp),Y same-page executes");
+        require(cpu.cycle() == 5, "cycle exact LDA (zp),Y same-page cycles");
+        require(cpu.state().a == 0x33, "cycle exact LDA (zp),Y same-page value");
+        require(cpu.step() == StepResult::Ok, "cycle exact LDA (zp),Y page-cross executes");
+        require(cpu.cycle() == 11, "cycle exact LDA (zp),Y page-cross cycles");
+        require(cpu.state().a == 0x44, "cycle exact LDA (zp),Y page-cross value");
+    }
+}
+
+void test_cycle_exact_bus_sequence_for_rmw_and_branch() {
+    {
+        SpyBus bus;
+        bus.set_reset_vector(0x0200);
+        const uint8_t program[] = {0xE6, 0x10}; // INC $10
+        bus.load(0x0200, program, sizeof(program));
+        bus.memory[0x0010] = 0x7F;
+        Cpu6510 cpu(bus, Cpu6510Config{false, ExecutionMode::CycleExact});
+        cpu.reset();
+        bus.events.clear();
+        require(cpu.step() == StepResult::Ok, "cycle exact spy INC executes");
+        require(bus.events.size() == 5, "cycle exact spy INC event count");
+        require_event(bus.events, 0, 'R', 0x0200, 0xE6, "cycle exact spy INC");
+        require_event(bus.events, 1, 'R', 0x0201, 0x10, "cycle exact spy INC");
+        require_event(bus.events, 2, 'R', 0x0010, 0x7F, "cycle exact spy INC");
+        require_event(bus.events, 3, 'W', 0x0010, 0x7F, "cycle exact spy INC");
+        require_event(bus.events, 4, 'W', 0x0010, 0x80, "cycle exact spy INC");
+    }
+    {
+        SpyBus bus;
+        bus.set_reset_vector(0x02FD);
+        const uint8_t program[] = {0xD0, 0x01}; // BNE to $0300
+        bus.load(0x02FD, program, sizeof(program));
+        Cpu6510 cpu(bus, Cpu6510Config{false, ExecutionMode::CycleExact});
+        cpu.reset();
+        cpu.state().p = FLAG_U;
+        bus.events.clear();
+        require(cpu.step() == StepResult::Ok, "cycle exact spy branch executes");
+        require(bus.events.size() == 4, "cycle exact spy branch event count");
+        require_event(bus.events, 0, 'R', 0x02FD, 0xD0, "cycle exact spy branch");
+        require_event(bus.events, 1, 'R', 0x02FE, 0x01, "cycle exact spy branch");
+        require_event(bus.events, 2, 'R', 0x02FF, 0x00, "cycle exact spy branch");
+        require_event(bus.events, 3, 'R', 0x0200, 0x00, "cycle exact spy branch");
+    }
+}
+
 } // namespace
 
 int main() {
@@ -1469,6 +1725,9 @@ int main() {
     test_run_matches_step_for_e2e_program();
     test_run_block_stops_on_budget_and_control_flow();
     test_run_block_stops_on_illegal_and_interrupt_pending();
+    test_cycle_exact_fixed_instruction_cycles();
+    test_cycle_exact_variable_cycles();
+    test_cycle_exact_bus_sequence_for_rmw_and_branch();
 #if J6510_ENABLE_BLOCK_CACHE
     test_run_cached_matches_step_and_tracks_cache_stats();
     test_run_cached_hits_and_invalidates_after_write();

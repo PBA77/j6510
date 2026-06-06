@@ -34,6 +34,20 @@ Cpu6510 cpu(bus, Cpu6510Config{false});
 That disables the 6510 port and leaves `$0000/$0001` as normal RAM bus
 addresses.
 
+The default execution mode remains the instruction-oriented fast path. For a
+cycle-counted reference path, construct the CPU with `CycleExact`:
+
+```cpp
+Cpu6510 cpu(bus, Cpu6510Config{false, ExecutionMode::CycleExact});
+```
+
+In this mode `step()` remains instruction-compatible, while `tick()` advances
+one counted CPU cycle and `run_cycles(max_cycles)` runs a cycle budget. The
+cycle-exact path covers documented NMOS opcodes, variable branch/page-cross
+cycles, read-modify-write dummy writes, stack/control-flow timing, and the 6510
+port through the normal bus helpers. `run_cached()` remains a fast
+instruction-mode API and is not used by `CycleExact` stepping.
+
 ## Build And Test
 
 ```sh

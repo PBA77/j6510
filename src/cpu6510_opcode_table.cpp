@@ -8,12 +8,146 @@ constexpr OpcodeInfo illegal_opcode() {
     return {};
 }
 
+constexpr bool is_branch(Operation operation) {
+    return operation == Operation::BPL || operation == Operation::BMI ||
+           operation == Operation::BVC || operation == Operation::BVS ||
+           operation == Operation::BCC || operation == Operation::BCS ||
+           operation == Operation::BNE || operation == Operation::BEQ;
+}
+
+constexpr bool is_read_page_cross_candidate(Operation operation, AddressingMode mode) {
+    const bool read_operation =
+        operation == Operation::LDA || operation == Operation::LDX ||
+        operation == Operation::LDY || operation == Operation::AND ||
+        operation == Operation::ORA || operation == Operation::EOR ||
+        operation == Operation::ADC || operation == Operation::SBC ||
+        operation == Operation::CMP;
+    return read_operation &&
+           (mode == AddressingMode::AbsoluteX || mode == AddressingMode::AbsoluteY ||
+            mode == AddressingMode::IndirectIndexed);
+}
+
+constexpr uint8_t nominal_cycles(Operation operation, AddressingMode mode) {
+    if (is_branch(operation)) {
+        return 2;
+    }
+
+    switch (operation) {
+    case Operation::BRK:
+        return 7;
+    case Operation::JSR:
+        return 6;
+    case Operation::RTS:
+        return 6;
+    case Operation::RTI:
+        return 6;
+    case Operation::PHA:
+    case Operation::PHP:
+        return 3;
+    case Operation::PLA:
+    case Operation::PLP:
+        return 4;
+    case Operation::JMP:
+        return mode == AddressingMode::Indirect ? 5 : 3;
+    case Operation::ASL:
+    case Operation::LSR:
+    case Operation::ROL:
+    case Operation::ROR:
+        if (mode == AddressingMode::Accumulator) {
+            return 2;
+        }
+        if (mode == AddressingMode::ZeroPage) {
+            return 5;
+        }
+        if (mode == AddressingMode::ZeroPageX) {
+            return 6;
+        }
+        if (mode == AddressingMode::Absolute) {
+            return 6;
+        }
+        return 7;
+    case Operation::INC:
+    case Operation::DEC:
+        if (mode == AddressingMode::ZeroPage) {
+            return 5;
+        }
+        if (mode == AddressingMode::ZeroPageX) {
+            return 6;
+        }
+        if (mode == AddressingMode::Absolute) {
+            return 6;
+        }
+        return 7;
+    case Operation::STA:
+        if (mode == AddressingMode::IndexedIndirect) {
+            return 6;
+        }
+        if (mode == AddressingMode::IndirectIndexed) {
+            return 6;
+        }
+        if (mode == AddressingMode::ZeroPage) {
+            return 3;
+        }
+        if (mode == AddressingMode::ZeroPageX || mode == AddressingMode::ZeroPageY) {
+            return 4;
+        }
+        if (mode == AddressingMode::Absolute) {
+            return 4;
+        }
+        return 5;
+    case Operation::STX:
+    case Operation::STY:
+        if (mode == AddressingMode::ZeroPage) {
+            return 3;
+        }
+        if (mode == AddressingMode::ZeroPageX || mode == AddressingMode::ZeroPageY) {
+            return 4;
+        }
+        return 4;
+    default:
+        break;
+    }
+
+    switch (mode) {
+    case AddressingMode::Implied:
+    case AddressingMode::Accumulator:
+        return 2;
+    case AddressingMode::Immediate:
+        return 2;
+    case AddressingMode::ZeroPage:
+        return 3;
+    case AddressingMode::ZeroPageX:
+    case AddressingMode::ZeroPageY:
+        return 4;
+    case AddressingMode::Absolute:
+        return 4;
+    case AddressingMode::AbsoluteX:
+    case AddressingMode::AbsoluteY:
+        return 4;
+    case AddressingMode::IndexedIndirect:
+        return 6;
+    case AddressingMode::IndirectIndexed:
+        return 5;
+    case AddressingMode::Indirect:
+        return 5;
+    case AddressingMode::Relative:
+        return 2;
+    }
+    return 1;
+}
+
 std::array<OpcodeInfo, 256> make_opcode_table() {
     std::array<OpcodeInfo, 256> table{};
     table.fill(illegal_opcode());
 
     auto op = [&table](uint8_t opcode, Operation operation, AddressingMode mode, const char* mnemonic, uint8_t bytes) {
-        table[opcode] = {operation, mode, mnemonic, bytes};
+        table[opcode] = {operation,
+                         mode,
+                         mnemonic,
+                         bytes,
+                         nominal_cycles(operation, mode),
+                         is_branch(operation),
+                         is_read_page_cross_candidate(operation, mode)};
     };
 
     op(0x00, Operation::BRK, AddressingMode::Implied, "BRK", 1);

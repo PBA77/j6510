@@ -86,6 +86,9 @@ struct OpcodeInfo {
     AddressingMode mode = AddressingMode::Implied;
     const char* mnemonic = "???";
     uint8_t bytes = 1;
+    uint8_t cycles = 1;
+    bool branch_extra_cycle = false;
+    bool page_cross_extra_cycle = false;
 };
 
 const std::array<OpcodeInfo, 256>& opcode_table();
