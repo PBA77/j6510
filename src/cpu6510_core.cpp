@@ -487,6 +487,9 @@ uint8_t Cpu6510::pull() {
 }
 
 uint8_t Cpu6510::read(uint16_t address) {
+    if (direct_memory_ && !config_.port_enabled) {
+        return direct_memory_[address];
+    }
     if (is_port_address(address)) {
         return read_port(address);
     }
@@ -497,13 +500,16 @@ uint8_t Cpu6510::read(uint16_t address) {
 }
 
 void Cpu6510::write(uint16_t address, uint8_t value) {
+    if (direct_memory_ && !config_.port_enabled) {
+        direct_write(address, value);
+        return;
+    }
     if (is_port_address(address)) {
         write_port(address, value);
         return;
     }
     if (direct_memory_) {
-        direct_memory_[address] = value;
-        invalidate_block_cache_for_write(address);
+        direct_write(address, value);
         return;
     }
     bus_.write(address, value);
@@ -643,10 +649,18 @@ Cpu6510::CachedBlock Cpu6510::decode_block(uint16_t pc) {
 bool Cpu6510::execute_cached_block(const CachedBlock& block, uint32_t remaining_budget, RunResult& result) {
     const uint32_t to_execute = block.count < remaining_budget ? block.count : remaining_budget;
     if (block.executable && can_use_fast_run_path()) {
-        for (uint32_t i = 0; i < to_execute; ++i) {
-            execute_cached_op(block.ops[i]);
-            ++result.instructions_executed;
-            result.stop_pc = state_.pc;
+        if (can_use_direct_memory_path()) {
+            for (uint32_t i = 0; i < to_execute; ++i) {
+                execute_cached_op_direct(block.ops[i]);
+                ++result.instructions_executed;
+                result.stop_pc = state_.pc;
+            }
+        } else {
+            for (uint32_t i = 0; i < to_execute; ++i) {
+                execute_cached_op(block.ops[i]);
+                ++result.instructions_executed;
+                result.stop_pc = state_.pc;
+            }
         }
         return true;
     }
@@ -761,6 +775,18 @@ bool Cpu6510::cached_write_is_safe_for_block(const CachedBlock& block, const Cac
     }
 }
 
+bool Cpu6510::can_use_direct_memory_path() const {
+    return direct_memory_ && !config_.port_enabled;
+}
+
+void Cpu6510::direct_write(uint16_t address, uint8_t value) {
+    direct_memory_[address] = value;
+    const uint8_t page = static_cast<uint8_t>(address >> 8);
+    if (valid_cached_blocks_ != 0 && cached_page_use_count_[page] != 0) {
+        invalidate_block_cache_for_write(address);
+    }
+}
+
 void Cpu6510::execute_cached_op(const CachedOp& op) {
     switch (op.kind) {
     case CachedOpKind::LdaImm:
@@ -816,6 +842,105 @@ void Cpu6510::execute_cached_op(const CachedOp& op) {
         return;
     case CachedOpKind::StaAbsY:
         write(static_cast<uint16_t>(op.operand + state_.y), state_.a);
+        state_.pc = static_cast<uint16_t>(state_.pc + 3);
+        return;
+    case CachedOpKind::Tax:
+        state_.x = state_.a;
+        state_.pc = static_cast<uint16_t>(state_.pc + 1);
+        set_zn(state_.x);
+        return;
+    case CachedOpKind::Txa:
+        state_.a = state_.x;
+        state_.pc = static_cast<uint16_t>(state_.pc + 1);
+        set_zn(state_.a);
+        return;
+    case CachedOpKind::Inx:
+        state_.x = static_cast<uint8_t>(state_.x + 1);
+        state_.pc = static_cast<uint16_t>(state_.pc + 1);
+        set_zn(state_.x);
+        return;
+    case CachedOpKind::Dex:
+        state_.x = static_cast<uint8_t>(state_.x - 1);
+        state_.pc = static_cast<uint16_t>(state_.pc + 1);
+        set_zn(state_.x);
+        return;
+    case CachedOpKind::Dey:
+        state_.y = static_cast<uint8_t>(state_.y - 1);
+        state_.pc = static_cast<uint16_t>(state_.pc + 1);
+        set_zn(state_.y);
+        return;
+    case CachedOpKind::Nop:
+        state_.pc = static_cast<uint16_t>(state_.pc + 1);
+        return;
+    case CachedOpKind::Bne:
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        if ((state_.p & FLAG_Z) == 0) {
+            state_.pc = static_cast<uint16_t>(state_.pc + static_cast<int8_t>(op.operand));
+        }
+        return;
+    case CachedOpKind::JmpAbs:
+        state_.pc = op.operand;
+        return;
+    case CachedOpKind::Fallback:
+        return;
+    }
+}
+
+void Cpu6510::execute_cached_op_direct(const CachedOp& op) {
+    switch (op.kind) {
+    case CachedOpKind::LdaImm:
+        state_.a = static_cast<uint8_t>(op.operand);
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        set_zn(state_.a);
+        return;
+    case CachedOpKind::LdxImm:
+        state_.x = static_cast<uint8_t>(op.operand);
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        set_zn(state_.x);
+        return;
+    case CachedOpKind::LdyImm:
+        state_.y = static_cast<uint8_t>(op.operand);
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        set_zn(state_.y);
+        return;
+    case CachedOpKind::LdaAbs:
+        state_.a = direct_memory_[op.operand];
+        state_.pc = static_cast<uint16_t>(state_.pc + 3);
+        set_zn(state_.a);
+        return;
+    case CachedOpKind::LdxAbs:
+        state_.x = direct_memory_[op.operand];
+        state_.pc = static_cast<uint16_t>(state_.pc + 3);
+        set_zn(state_.x);
+        return;
+    case CachedOpKind::LdaZpX:
+        state_.a = direct_memory_[static_cast<uint8_t>(op.operand + state_.x)];
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        set_zn(state_.a);
+        return;
+    case CachedOpKind::LdaAbsY:
+        state_.a = direct_memory_[static_cast<uint16_t>(op.operand + state_.y)];
+        state_.pc = static_cast<uint16_t>(state_.pc + 3);
+        set_zn(state_.a);
+        return;
+    case CachedOpKind::StaAbs:
+        direct_write(op.operand, state_.a);
+        state_.pc = static_cast<uint16_t>(state_.pc + 3);
+        return;
+    case CachedOpKind::StxAbs:
+        direct_write(op.operand, state_.x);
+        state_.pc = static_cast<uint16_t>(state_.pc + 3);
+        return;
+    case CachedOpKind::StaZp:
+        direct_write(static_cast<uint8_t>(op.operand), state_.a);
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        return;
+    case CachedOpKind::StaZpX:
+        direct_write(static_cast<uint8_t>(op.operand + state_.x), state_.a);
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        return;
+    case CachedOpKind::StaAbsY:
+        direct_write(static_cast<uint16_t>(op.operand + state_.y), state_.a);
         state_.pc = static_cast<uint16_t>(state_.pc + 3);
         return;
     case CachedOpKind::Tax:

@@ -177,7 +177,10 @@ private:
     bool execute_cached_block(const CachedBlock& block, uint32_t remaining_budget, RunResult& result);
     bool decode_cached_op(uint8_t opcode, uint16_t operand, CachedOp& op) const;
     bool cached_write_is_safe_for_block(const CachedBlock& block, const CachedOp& op) const;
+    bool can_use_direct_memory_path() const;
+    void direct_write(uint16_t address, uint8_t value);
     void execute_cached_op(const CachedOp& op);
+    void execute_cached_op_direct(const CachedOp& op);
     uint8_t fetch8();
     uint16_t fetch16();
     uint16_t read16(uint16_t address);
