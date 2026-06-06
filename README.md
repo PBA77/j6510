@@ -68,12 +68,16 @@ The repository also includes a PlatformIO stack:
 pio run -e teensy40-benchmark
 pio run -e rp2040-pico-benchmark
 pio run -e esp32s2-saola-benchmark
+pio run -e esp32s2-saola-fast
 pio run -e teensy40-benchmark -t upload
 pio device monitor -b 115200
 ```
 
 If PlatformIO Core is installed but `pio` is not on `PATH`, use
 `~/.platformio/penv/bin/pio` or add `~/.platformio/penv/bin` to your shell path.
+
+The `esp32s2-saola-fast` environment builds the same sketch with `-O3` and marks
+the cached executor for IRAM placement through `J6510_FAST_CODE_ATTR=IRAM_ATTR`.
 
 This is not a full C64 target. It does not include VIC-II, SID, CIA, keyboard,
 video, storage, or real host interrupt wiring.

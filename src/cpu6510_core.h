@@ -11,6 +11,10 @@
 #define J6510_ENABLE_BLOCK_CACHE 1
 #endif
 
+#ifndef J6510_FAST_CODE_ATTR
+#define J6510_FAST_CODE_ATTR
+#endif
+
 namespace j6510 {
 
 constexpr uint8_t FLAG_C = 0x01;
@@ -111,7 +115,7 @@ public:
     StepResult step();
     RunResult run(uint32_t max_instructions);
     BlockRunResult run_block(uint32_t max_instructions);
-    RunResult run_cached(uint32_t max_instructions);
+    J6510_FAST_CODE_ATTR RunResult run_cached(uint32_t max_instructions);
     const BlockCacheStats& block_cache_stats() const;
     void clear_block_cache();
 
@@ -214,14 +218,14 @@ private:
     bool block_uses_page(const CachedBlock& block, uint8_t page) const;
     CachedBlock& block_cache_slot(uint16_t pc);
     CachedBlock decode_block(uint16_t pc);
-    bool execute_cached_block(const CachedBlock& block, uint32_t remaining_budget, RunResult& result);
+    J6510_FAST_CODE_ATTR bool execute_cached_block(const CachedBlock& block, uint32_t remaining_budget, RunResult& result);
     bool decode_cached_op(uint8_t opcode, uint16_t operand, CachedOp& op) const;
     bool is_hot_cached_op(CachedOpKind kind) const;
     bool cached_write_is_safe_for_block(const CachedBlock& block, const CachedOp& op) const;
     bool can_use_direct_memory_path() const;
     void execute_cached_op(const CachedOp& op);
-    void execute_cached_block_direct_hot(const CachedBlock& block, uint32_t to_execute, RunResult& result);
-    void execute_cached_block_direct(const CachedBlock& block, uint32_t to_execute, RunResult& result);
+    J6510_FAST_CODE_ATTR void execute_cached_block_direct_hot(const CachedBlock& block, uint32_t to_execute, RunResult& result);
+    J6510_FAST_CODE_ATTR void execute_cached_block_direct(const CachedBlock& block, uint32_t to_execute, RunResult& result);
 #endif
     uint8_t fetch8();
     uint16_t fetch16();

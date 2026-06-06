@@ -444,7 +444,7 @@ RunResult Cpu6510::run(uint32_t max_instructions) {
     return result;
 }
 
-RunResult Cpu6510::run_cached(uint32_t max_instructions) {
+J6510_FAST_CODE_ATTR RunResult Cpu6510::run_cached(uint32_t max_instructions) {
 #if J6510_ENABLE_BLOCK_CACHE
     RunResult result{};
     while (result.instructions_executed < max_instructions) {
@@ -734,7 +734,7 @@ Cpu6510::CachedBlock Cpu6510::decode_block(uint16_t pc) {
     return block;
 }
 
-bool Cpu6510::execute_cached_block(const CachedBlock& block, uint32_t remaining_budget, RunResult& result) {
+J6510_FAST_CODE_ATTR bool Cpu6510::execute_cached_block(const CachedBlock& block, uint32_t remaining_budget, RunResult& result) {
     const uint32_t to_execute = block.count < remaining_budget ? block.count : remaining_budget;
     if (block.executable && can_use_fast_run_path()) {
         ++block_cache_stats_.ir_blocks;
@@ -1251,7 +1251,9 @@ void Cpu6510::execute_cached_op(const CachedOp& op) {
     }
 }
 
-void Cpu6510::execute_cached_block_direct_hot(const CachedBlock& block, uint32_t to_execute, RunResult& result) {
+J6510_FAST_CODE_ATTR void Cpu6510::execute_cached_block_direct_hot(const CachedBlock& block,
+                                                                    uint32_t to_execute,
+                                                                    RunResult& result) {
     uint8_t* memory = direct_memory_;
     uint8_t a = state_.a;
     uint8_t x = state_.x;
@@ -1413,7 +1415,9 @@ void Cpu6510::execute_cached_block_direct_hot(const CachedBlock& block, uint32_t
     result.stop_pc = pc;
 }
 
-void Cpu6510::execute_cached_block_direct(const CachedBlock& block, uint32_t to_execute, RunResult& result) {
+J6510_FAST_CODE_ATTR void Cpu6510::execute_cached_block_direct(const CachedBlock& block,
+                                                                uint32_t to_execute,
+                                                                RunResult& result) {
     uint8_t* memory = direct_memory_;
     uint8_t a = state_.a;
     uint8_t x = state_.x;

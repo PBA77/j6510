@@ -11,6 +11,7 @@ From the repository root:
 pio run -e teensy40-benchmark
 pio run -e rp2040-pico-benchmark
 pio run -e esp32s2-saola-benchmark
+pio run -e esp32s2-saola-fast
 pio device monitor -b 115200
 ```
 
@@ -23,4 +24,5 @@ build/upload.
 
 The PlatformIO environments enable the cached-block executor. On ESP32-S2 with
 PSRAM, the emulated 64 KB bus RAM is allocated in PSRAM while the CPU and block
-cache stay in local heap when possible.
+cache stay in local heap when possible. The `esp32s2-saola-fast` environment
+adds `-O3` and marks the cached executor for IRAM placement.
