@@ -60,6 +60,7 @@ the reference instruction path. You can pass an iteration count:
 
 ```sh
 ./build-release/j6510_benchmark both 10000000
+./build-release/j6510_benchmark mixed 5000000
 ```
 
 Current local Release baseline after the first hot-path optimization pass:
@@ -69,7 +70,9 @@ iterations: 10000000
 instructions: 90000000
 nominal 6502 cycles: 270000000
 step 6502 equivalent: ~454 MHz
-run 6502 equivalent:  ~690 MHz
+run 6502 equivalent:  ~636 MHz
+mixed step equivalent: ~505 MHz
+mixed run equivalent:  ~677 MHz
 ```
 
 ## External CPU Test Suites

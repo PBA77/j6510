@@ -115,6 +115,15 @@ private:
     void notify_port_if_changed(uint8_t old_output);
     bool can_use_fast_run_path() const;
     bool run_fast_instruction(StepResult& result);
+    uint8_t fast_fetch8();
+    uint16_t fast_fetch16();
+    uint16_t fast_zp_x();
+    uint16_t fast_zp_y();
+    uint16_t fast_abs_x();
+    uint16_t fast_abs_y();
+    uint16_t fast_indexed_indirect();
+    uint16_t fast_indirect_indexed();
+    void fast_branch_if(bool condition);
     uint8_t read_operand(AddressingMode mode);
     void write_operand(AddressingMode mode, uint8_t value);
     void compare(uint8_t lhs, uint8_t rhs);

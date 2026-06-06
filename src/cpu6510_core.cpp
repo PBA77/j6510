@@ -515,25 +515,145 @@ bool Cpu6510::can_use_fast_run_path() const {
 
 bool Cpu6510::run_fast_instruction(StepResult& result) {
     const uint16_t instruction_pc = state_.pc;
-    const uint8_t opcode = read(state_.pc++);
+    const uint8_t opcode = fast_fetch8();
 
     switch (opcode) {
+    case 0x10:
+        fast_branch_if((state_.p & FLAG_N) == 0);
+        return true;
+
+    case 0x18:
+        state_.p = static_cast<uint8_t>((state_.p & ~FLAG_C) | FLAG_U);
+        return true;
+
+    case 0x30:
+        fast_branch_if((state_.p & FLAG_N) != 0);
+        return true;
+
+    case 0x38:
+        state_.p = static_cast<uint8_t>(state_.p | FLAG_C | FLAG_U);
+        return true;
+
     case 0x4C:
-        state_.pc = read16(state_.pc);
+        state_.pc = fast_fetch16();
+        return true;
+
+    case 0x50:
+        fast_branch_if((state_.p & FLAG_V) == 0);
+        return true;
+
+    case 0x58:
+        state_.p = static_cast<uint8_t>((state_.p & ~FLAG_I) | FLAG_U);
+        return true;
+
+    case 0x70:
+        fast_branch_if((state_.p & FLAG_V) != 0);
+        return true;
+
+    case 0x78:
+        state_.p = static_cast<uint8_t>(state_.p | FLAG_I | FLAG_U);
+        return true;
+
+    case 0x84:
+        write(fast_fetch8(), state_.y);
+        return true;
+
+    case 0x85:
+        write(fast_fetch8(), state_.a);
+        return true;
+
+    case 0x86:
+        write(fast_fetch8(), state_.x);
+        return true;
+
+    case 0x88:
+        state_.y = static_cast<uint8_t>(state_.y - 1);
+        set_zn(state_.y);
+        return true;
+
+    case 0x8A:
+        state_.a = state_.x;
+        set_zn(state_.a);
         return true;
 
     case 0x8D:
-        write(read16(state_.pc), state_.a);
-        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        write(fast_fetch16(), state_.a);
         return true;
 
     case 0x8E:
-        write(read16(state_.pc), state_.x);
-        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        write(fast_fetch16(), state_.x);
+        return true;
+
+    case 0x90:
+        fast_branch_if((state_.p & FLAG_C) == 0);
+        return true;
+
+    case 0x94:
+        write(fast_zp_x(), state_.y);
+        return true;
+
+    case 0x95:
+        write(fast_zp_x(), state_.a);
+        return true;
+
+    case 0x96:
+        write(fast_zp_y(), state_.x);
+        return true;
+
+    case 0x98:
+        state_.a = state_.y;
+        set_zn(state_.a);
+        return true;
+
+    case 0x99:
+        write(fast_abs_y(), state_.a);
+        return true;
+
+    case 0x9A:
+        state_.sp = state_.x;
+        return true;
+
+    case 0x9D:
+        write(fast_abs_x(), state_.a);
+        return true;
+
+    case 0xA0:
+        state_.y = fast_fetch8();
+        set_zn(state_.y);
+        return true;
+
+    case 0xA1:
+        state_.a = read(fast_indexed_indirect());
+        set_zn(state_.a);
+        return true;
+
+    case 0xA2:
+        state_.x = fast_fetch8();
+        set_zn(state_.x);
+        return true;
+
+    case 0xA4:
+        state_.y = read(fast_fetch8());
+        set_zn(state_.y);
+        return true;
+
+    case 0xA5:
+        state_.a = read(fast_fetch8());
+        set_zn(state_.a);
+        return true;
+
+    case 0xA6:
+        state_.x = read(fast_fetch8());
+        set_zn(state_.x);
+        return true;
+
+    case 0xA8:
+        state_.y = state_.a;
+        set_zn(state_.y);
         return true;
 
     case 0xA9:
-        state_.a = read(state_.pc++);
+        state_.a = fast_fetch8();
         set_zn(state_.a);
         return true;
 
@@ -543,14 +663,65 @@ bool Cpu6510::run_fast_instruction(StepResult& result) {
         return true;
 
     case 0xAD:
-        state_.a = read(read16(state_.pc));
-        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        state_.a = read(fast_fetch16());
         set_zn(state_.a);
         return true;
 
     case 0xAE:
-        state_.x = read(read16(state_.pc));
-        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        state_.x = read(fast_fetch16());
+        set_zn(state_.x);
+        return true;
+
+    case 0xB0:
+        fast_branch_if((state_.p & FLAG_C) != 0);
+        return true;
+
+    case 0xB1:
+        state_.a = read(fast_indirect_indexed());
+        set_zn(state_.a);
+        return true;
+
+    case 0xB4:
+        state_.y = read(fast_zp_x());
+        set_zn(state_.y);
+        return true;
+
+    case 0xB5:
+        state_.a = read(fast_zp_x());
+        set_zn(state_.a);
+        return true;
+
+    case 0xB6:
+        state_.x = read(fast_zp_y());
+        set_zn(state_.x);
+        return true;
+
+    case 0xB8:
+        state_.p = static_cast<uint8_t>((state_.p & ~FLAG_V) | FLAG_U);
+        return true;
+
+    case 0xB9:
+        state_.a = read(fast_abs_y());
+        set_zn(state_.a);
+        return true;
+
+    case 0xBA:
+        state_.x = state_.sp;
+        set_zn(state_.x);
+        return true;
+
+    case 0xBC:
+        state_.y = read(fast_abs_x());
+        set_zn(state_.y);
+        return true;
+
+    case 0xBD:
+        state_.a = read(fast_abs_x());
+        set_zn(state_.a);
+        return true;
+
+    case 0xBE:
+        state_.x = read(fast_abs_y());
         set_zn(state_.x);
         return true;
 
@@ -559,15 +730,77 @@ bool Cpu6510::run_fast_instruction(StepResult& result) {
         set_zn(state_.x);
         return true;
 
+    case 0xC8:
+        state_.y = static_cast<uint8_t>(state_.y + 1);
+        set_zn(state_.y);
+        return true;
+
+    case 0xD0:
+        fast_branch_if((state_.p & FLAG_Z) == 0);
+        return true;
+
+    case 0xD8:
+        state_.p = static_cast<uint8_t>((state_.p & ~FLAG_D) | FLAG_U);
+        return true;
+
     case 0xE8:
         state_.x = static_cast<uint8_t>(state_.x + 1);
         set_zn(state_.x);
+        return true;
+
+    case 0xF0:
+        fast_branch_if((state_.p & FLAG_Z) != 0);
+        return true;
+
+    case 0xF8:
+        state_.p = static_cast<uint8_t>(state_.p | FLAG_D | FLAG_U);
         return true;
 
     default:
         state_.pc = instruction_pc;
         result = StepResult::Ok;
         return false;
+    }
+}
+
+uint8_t Cpu6510::fast_fetch8() {
+    return read(state_.pc++);
+}
+
+uint16_t Cpu6510::fast_fetch16() {
+    const uint8_t low = fast_fetch8();
+    const uint8_t high = fast_fetch8();
+    return static_cast<uint16_t>((high << 8) | low);
+}
+
+uint16_t Cpu6510::fast_zp_x() {
+    return static_cast<uint8_t>(fast_fetch8() + state_.x);
+}
+
+uint16_t Cpu6510::fast_zp_y() {
+    return static_cast<uint8_t>(fast_fetch8() + state_.y);
+}
+
+uint16_t Cpu6510::fast_abs_x() {
+    return static_cast<uint16_t>(fast_fetch16() + state_.x);
+}
+
+uint16_t Cpu6510::fast_abs_y() {
+    return static_cast<uint16_t>(fast_fetch16() + state_.y);
+}
+
+uint16_t Cpu6510::fast_indexed_indirect() {
+    return read16_zp(static_cast<uint8_t>(fast_fetch8() + state_.x));
+}
+
+uint16_t Cpu6510::fast_indirect_indexed() {
+    return static_cast<uint16_t>(read16_zp(fast_fetch8()) + state_.y);
+}
+
+void Cpu6510::fast_branch_if(bool condition) {
+    const int8_t offset = static_cast<int8_t>(fast_fetch8());
+    if (condition) {
+        state_.pc = static_cast<uint16_t>(state_.pc + offset);
     }
 }
 
