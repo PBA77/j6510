@@ -5,6 +5,7 @@
 
 #include <cstdint>
 #include <functional>
+#include <array>
 
 namespace j6510 {
 
@@ -72,6 +73,12 @@ struct BlockRunResult {
     uint16_t stop_pc = 0;
 };
 
+struct BlockCacheStats {
+    uint64_t hits = 0;
+    uint64_t misses = 0;
+    uint64_t invalidations = 0;
+};
+
 class Cpu6510 {
 public:
     explicit Cpu6510(Bus& bus);
@@ -94,6 +101,9 @@ public:
     StepResult step();
     RunResult run(uint32_t max_instructions);
     BlockRunResult run_block(uint32_t max_instructions);
+    RunResult run_cached(uint32_t max_instructions);
+    const BlockCacheStats& block_cache_stats() const;
+    void clear_block_cache();
 
     void set_port_external_inputs(uint8_t value);
     void set_port_active_mask(uint8_t mask);
@@ -112,9 +122,30 @@ private:
     Port6510State port_{};
     std::function<void(uint8_t)> port_changed_callback_{};
     InterruptPollCallback interrupt_poll_callback_{};
+    struct CachedBlock {
+        bool valid = false;
+        uint16_t start_pc = 0;
+        uint8_t count = 0;
+        uint8_t page_start = 0;
+        uint8_t page_end = 0;
+        uint8_t lengths[32] = {};
+        uint8_t opcodes[32] = {};
+        RunStopReason terminator = RunStopReason::BudgetExhausted;
+    };
+    std::array<CachedBlock, 256> block_cache_{};
+    std::array<uint16_t, 256> cached_page_use_count_{};
+    uint16_t valid_cached_blocks_ = 0;
+    BlockCacheStats block_cache_stats_{};
 
     uint8_t read(uint16_t address);
     void write(uint16_t address, uint8_t value);
+    void invalidate_block_cache_for_write(uint16_t address);
+    void add_block_to_page_counts(const CachedBlock& block);
+    void remove_block_from_page_counts(const CachedBlock& block);
+    bool block_uses_page(const CachedBlock& block, uint8_t page) const;
+    CachedBlock& block_cache_slot(uint16_t pc);
+    CachedBlock decode_block(uint16_t pc);
+    bool execute_cached_block(const CachedBlock& block, uint32_t remaining_budget, RunResult& result);
     uint8_t fetch8();
     uint16_t fetch16();
     uint16_t read16(uint16_t address);

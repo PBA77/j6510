@@ -1056,6 +1056,75 @@ void test_run_block_stops_on_illegal_and_interrupt_pending() {
     require(cpu.state().pc == 0x0E00, "run_block pending IRQ preserves PC");
 }
 
+void test_run_cached_matches_step_and_tracks_cache_stats() {
+    RamBus step_bus;
+    RamBus cached_bus;
+    step_bus.set_reset_vector(0x1000);
+    cached_bus.set_reset_vector(0x1000);
+    const uint8_t program[] = {
+        0xA9, 0x01,       // LDA #$01
+        0xAA,             // TAX
+        0xE8,             // INX
+        0xD0, 0x02,       // BNE $1008
+        0xA9, 0x00,       // skipped
+        0xEA,             // NOP
+        0x02,             // illegal sentinel
+    };
+    step_bus.load(0x1000, program, sizeof(program));
+    cached_bus.load(0x1000, program, sizeof(program));
+    Cpu6510 step_cpu(step_bus);
+    Cpu6510 cached_cpu(cached_bus);
+    step_cpu.reset();
+    cached_cpu.reset();
+
+    for (int i = 0; i < 5; ++i) {
+        require(step_cpu.step() == StepResult::Ok, "reference step for cached test executes");
+    }
+    const RunResult cached = cached_cpu.run_cached(5);
+
+    require(cached.result == StepResult::Ok, "run_cached returns Ok before sentinel");
+    require(cached.instructions_executed == 5, "run_cached reports instruction budget");
+    require_same_state(step_cpu.state(), cached_cpu.state(), "run_cached vs step");
+    require(cached_cpu.block_cache_stats().misses > 0, "run_cached records cache miss");
+
+    const RunResult illegal = cached_cpu.run_cached(1);
+    require(illegal.result == StepResult::IllegalOpcode, "run_cached reports illegal sentinel");
+    require(illegal.instructions_executed == 1, "run_cached counts illegal instruction");
+}
+
+void test_run_cached_hits_and_invalidates_after_write() {
+    RamBus bus;
+    bus.set_reset_vector(0x1100);
+    const uint8_t program[] = {
+        0xEA,             // NOP
+        0xEA,             // NOP
+        0x4C, 0x00, 0x11, // JMP $1100
+    };
+    bus.load(0x1100, program, sizeof(program));
+    Cpu6510 cpu(bus);
+    cpu.reset();
+
+    RunResult first = cpu.run_cached(3);
+    require(first.result == StepResult::Ok, "first run_cached loop executes");
+    require(cpu.block_cache_stats().misses >= 1, "first run_cached records miss");
+
+    RunResult second = cpu.run_cached(3);
+    require(second.result == StepResult::Ok, "second run_cached loop executes");
+    require(cpu.block_cache_stats().hits >= 1, "second run_cached records hit");
+
+    const uint64_t invalidations_before = cpu.block_cache_stats().invalidations;
+    const uint8_t writer[] = {
+        0xA9, 0x42,       // LDA #$42
+        0x8D, 0x01, 0x11, // STA $1101
+    };
+    bus.set_reset_vector(0x1210);
+    bus.load(0x1210, writer, sizeof(writer));
+    cpu.reset();
+    require(cpu.run_cached(2).result == StepResult::Ok, "run_cached writer executes");
+    require(bus.memory[0x1101] == 0x42, "writer updates cached code page");
+    require(cpu.block_cache_stats().invalidations > invalidations_before, "write to cached code page invalidates cache");
+}
+
 } // namespace
 
 int main() {
@@ -1088,6 +1157,8 @@ int main() {
     test_run_matches_step_for_e2e_program();
     test_run_block_stops_on_budget_and_control_flow();
     test_run_block_stops_on_illegal_and_interrupt_pending();
+    test_run_cached_matches_step_and_tracks_cache_stats();
+    test_run_cached_hits_and_invalidates_after_write();
 
     std::cout << "All j6510 tests passed\n";
     return 0;

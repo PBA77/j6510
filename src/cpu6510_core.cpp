@@ -377,6 +377,48 @@ RunResult Cpu6510::run(uint32_t max_instructions) {
     return result;
 }
 
+RunResult Cpu6510::run_cached(uint32_t max_instructions) {
+    RunResult result{};
+    while (result.instructions_executed < max_instructions) {
+        if (has_pending_interrupt_work()) {
+            result.stop_pc = state_.pc;
+            return result;
+        }
+
+        CachedBlock& slot = block_cache_slot(state_.pc);
+        if (!slot.valid || slot.start_pc != state_.pc) {
+            if (slot.valid) {
+                remove_block_from_page_counts(slot);
+                --valid_cached_blocks_;
+            }
+            slot = decode_block(state_.pc);
+            add_block_to_page_counts(slot);
+            ++valid_cached_blocks_;
+            ++block_cache_stats_.misses;
+        } else {
+            ++block_cache_stats_.hits;
+        }
+
+        if (!execute_cached_block(slot, max_instructions - result.instructions_executed, result)) {
+            return result;
+        }
+    }
+    result.stop_pc = state_.pc;
+    return result;
+}
+
+const BlockCacheStats& Cpu6510::block_cache_stats() const {
+    return block_cache_stats_;
+}
+
+void Cpu6510::clear_block_cache() {
+    for (auto& block : block_cache_) {
+        block.valid = false;
+    }
+    cached_page_use_count_.fill(0);
+    valid_cached_blocks_ = 0;
+}
+
 BlockRunResult Cpu6510::run_block(uint32_t max_instructions) {
     BlockRunResult result{};
     result.start_pc = state_.pc;
@@ -461,9 +503,136 @@ void Cpu6510::write(uint16_t address, uint8_t value) {
     }
     if (direct_memory_) {
         direct_memory_[address] = value;
+        invalidate_block_cache_for_write(address);
         return;
     }
     bus_.write(address, value);
+    invalidate_block_cache_for_write(address);
+}
+
+void Cpu6510::invalidate_block_cache_for_write(uint16_t address) {
+    if (valid_cached_blocks_ == 0) {
+        return;
+    }
+
+    const uint8_t page = static_cast<uint8_t>(address >> 8);
+    if (cached_page_use_count_[page] == 0) {
+        return;
+    }
+
+    bool invalidated = false;
+    for (auto& block : block_cache_) {
+        if (block.valid && block_uses_page(block, page)) {
+            remove_block_from_page_counts(block);
+            block.valid = false;
+            --valid_cached_blocks_;
+            invalidated = true;
+        }
+    }
+    if (invalidated) {
+        ++block_cache_stats_.invalidations;
+    }
+}
+
+void Cpu6510::add_block_to_page_counts(const CachedBlock& block) {
+    if (!block.valid) {
+        return;
+    }
+    uint8_t page = block.page_start;
+    while (true) {
+        ++cached_page_use_count_[page];
+        if (page == block.page_end) {
+            break;
+        }
+        ++page;
+    }
+}
+
+void Cpu6510::remove_block_from_page_counts(const CachedBlock& block) {
+    if (!block.valid) {
+        return;
+    }
+    uint8_t page = block.page_start;
+    while (true) {
+        if (cached_page_use_count_[page] > 0) {
+            --cached_page_use_count_[page];
+        }
+        if (page == block.page_end) {
+            break;
+        }
+        ++page;
+    }
+}
+
+bool Cpu6510::block_uses_page(const CachedBlock& block, uint8_t page) const {
+    if (block.page_start <= block.page_end) {
+        return page >= block.page_start && page <= block.page_end;
+    }
+    return page >= block.page_start || page <= block.page_end;
+}
+
+Cpu6510::CachedBlock& Cpu6510::block_cache_slot(uint16_t pc) {
+    return block_cache_[pc & 0x00FF];
+}
+
+Cpu6510::CachedBlock Cpu6510::decode_block(uint16_t pc) {
+    CachedBlock block{};
+    block.valid = true;
+    block.start_pc = pc;
+    block.page_start = static_cast<uint8_t>(pc >> 8);
+
+    uint16_t cursor = pc;
+    while (block.count < 32) {
+        const uint8_t opcode = read(cursor);
+        const OpcodeInfo& info = opcode_info(opcode);
+        block.opcodes[block.count] = opcode;
+        block.lengths[block.count] = info.bytes;
+        ++block.count;
+
+        if (info.operation == Operation::Illegal) {
+            block.page_end = static_cast<uint8_t>(cursor >> 8);
+            block.terminator = RunStopReason::IllegalOpcode;
+            return block;
+        }
+        if (is_block_terminator(opcode)) {
+            const uint16_t last_byte = static_cast<uint16_t>(cursor + info.bytes - 1);
+            block.page_end = static_cast<uint8_t>(last_byte >> 8);
+            block.terminator = RunStopReason::ControlFlow;
+            return block;
+        }
+
+        cursor = static_cast<uint16_t>(cursor + info.bytes);
+    }
+
+    block.page_end = static_cast<uint8_t>(static_cast<uint16_t>(cursor - 1) >> 8);
+    block.terminator = RunStopReason::BudgetExhausted;
+    return block;
+}
+
+bool Cpu6510::execute_cached_block(const CachedBlock& block, uint32_t remaining_budget, RunResult& result) {
+    const uint32_t to_execute = block.count < remaining_budget ? block.count : remaining_budget;
+    for (uint32_t i = 0; i < to_execute; ++i) {
+        StepResult step_result = StepResult::Ok;
+        const uint16_t pc_before = state_.pc;
+        if (!can_use_fast_run_path() || !run_fast_instruction(step_result)) {
+            step_result = step();
+        }
+        ++result.instructions_executed;
+        result.stop_pc = state_.pc;
+
+        if (step_result != StepResult::Ok) {
+            result.result = step_result;
+            return false;
+        }
+
+        if (block.lengths[i] != 0 && !is_block_terminator(block.opcodes[i])) {
+            const uint16_t expected_pc = static_cast<uint16_t>(pc_before + block.lengths[i]);
+            if (state_.pc != expected_pc) {
+                return true;
+            }
+        }
+    }
+    return true;
 }
 
 uint8_t Cpu6510::fetch8() {

@@ -21,7 +21,7 @@ uint64_t parse_iterations(int argc, char** argv) {
     char* end = nullptr;
     const unsigned long long value = std::strtoull(argv[2], &end, 10);
     if (end == argv[2] || *end != '\0' || value == 0) {
-        std::cerr << "usage: j6510_benchmark [step|run|both] [positive_iterations]\n";
+        std::cerr << "usage: j6510_benchmark [step|run|block|cached|both|mixed] [positive_iterations]\n";
         std::exit(2);
     }
     return static_cast<uint64_t>(value);
@@ -33,8 +33,8 @@ std::string parse_mode(int argc, char** argv) {
     }
 
     std::string mode = argv[1];
-    if (mode != "step" && mode != "run" && mode != "block" && mode != "both" && mode != "mixed") {
-        std::cerr << "usage: j6510_benchmark [step|run|block|both|mixed] [positive_iterations]\n";
+    if (mode != "step" && mode != "run" && mode != "block" && mode != "cached" && mode != "both" && mode != "mixed") {
+        std::cerr << "usage: j6510_benchmark [step|run|block|cached|both|mixed] [positive_iterations]\n";
         std::exit(2);
     }
     return mode;
@@ -164,6 +164,32 @@ void run_block_benchmark(uint64_t total_instructions, uint64_t total_cycles) {
     print_result("block", std::chrono::duration<double>(end - start).count(), total_instructions, total_cycles);
 }
 
+void run_cached_benchmark(uint64_t total_instructions, uint64_t total_cycles) {
+    if (total_instructions > std::numeric_limits<uint32_t>::max()) {
+        std::cerr << "cached benchmark instruction count exceeds uint32_t batch API limit\n";
+        std::exit(2);
+    }
+
+    RamBus bus;
+    load_benchmark_program(bus);
+    Cpu6510 cpu(bus, Cpu6510Config{false});
+    cpu.reset();
+
+    const auto start = std::chrono::steady_clock::now();
+    const RunResult result = cpu.run_cached(static_cast<uint32_t>(total_instructions));
+    const auto end = std::chrono::steady_clock::now();
+
+    if (result.result != StepResult::Ok || result.instructions_executed != total_instructions) {
+        std::cerr << "cached benchmark stopped early at PC=$"
+                  << std::hex << std::setw(4) << std::setfill('0') << result.stop_pc << '\n';
+        std::exit(1);
+    }
+    print_result("cached", std::chrono::duration<double>(end - start).count(), total_instructions, total_cycles);
+    const auto& stats = cpu.block_cache_stats();
+    std::cout << "  cache hits/misses/invalidations: "
+              << stats.hits << '/' << stats.misses << '/' << stats.invalidations << '\n';
+}
+
 void run_mixed_benchmark(uint64_t iterations, const char* mode) {
     constexpr uint64_t instructions_per_iteration = 30;
     constexpr uint64_t cycles_per_iteration = 101;
@@ -184,6 +210,17 @@ void run_mixed_benchmark(uint64_t iterations, const char* mode) {
         const RunResult result = cpu.run(static_cast<uint32_t>(total_instructions));
         if (result.result != StepResult::Ok || result.instructions_executed != total_instructions) {
             std::cerr << "mixed run benchmark stopped early at PC=$"
+                      << std::hex << std::setw(4) << std::setfill('0') << result.stop_pc << '\n';
+            std::exit(1);
+        }
+    } else if (std::string(mode) == "cached") {
+        if (total_instructions > std::numeric_limits<uint32_t>::max()) {
+            std::cerr << "mixed cached benchmark instruction count exceeds uint32_t batch API limit\n";
+            std::exit(2);
+        }
+        const RunResult result = cpu.run_cached(static_cast<uint32_t>(total_instructions));
+        if (result.result != StepResult::Ok || result.instructions_executed != total_instructions) {
+            std::cerr << "mixed cached benchmark stopped early at PC=$"
                       << std::hex << std::setw(4) << std::setfill('0') << result.stop_pc << '\n';
             std::exit(1);
         }
@@ -217,6 +254,11 @@ void run_mixed_benchmark(uint64_t iterations, const char* mode) {
     std::string label = "mixed ";
     label += mode;
     print_result(label.c_str(), std::chrono::duration<double>(end - start).count(), total_instructions, total_cycles);
+    if (std::string(mode) == "cached") {
+        const auto& stats = cpu.block_cache_stats();
+        std::cout << "  cache hits/misses/invalidations: "
+                  << stats.hits << '/' << stats.misses << '/' << stats.invalidations << '\n';
+    }
 }
 
 } // namespace
@@ -235,6 +277,7 @@ int main(int argc, char** argv) {
         run_mixed_benchmark(iterations, "step");
         run_mixed_benchmark(iterations, "run");
         run_mixed_benchmark(iterations, "block");
+        run_mixed_benchmark(iterations, "cached");
         return 0;
     }
 
@@ -246,6 +289,9 @@ int main(int argc, char** argv) {
     }
     if (mode == "block" || mode == "both") {
         run_block_benchmark(total_instructions, total_cycles);
+    }
+    if (mode == "cached" || mode == "both") {
+        run_cached_benchmark(total_instructions, total_cycles);
     }
 
     return 0;

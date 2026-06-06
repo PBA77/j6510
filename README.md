@@ -52,30 +52,41 @@ cmake --build build-release --target j6510_benchmark
 ./build-release/j6510_benchmark both
 ```
 
-The benchmark runs a fixed documented-opcode loop and reports throughput as
-equivalent original 6502 MHz, using nominal NMOS 6502 cycle counts for that
-instruction mix. It can compare public `step()` execution with batch `run()`
-execution. `run()` uses a small optimized hot-opcode executor with fallback to
-the reference instruction path. You can pass an iteration count:
+The benchmark runs fixed documented-opcode loops and reports throughput as
+equivalent original 6502 MHz, using nominal NMOS 6502 cycle counts for those
+instruction mixes. It can compare public `step()` execution, batch `run()`,
+terminator-aware `run_block()`, and conservative cached-block `run_cached()`.
+`run()` uses a small optimized hot-opcode executor with fallback to the
+reference instruction path. You can pass an iteration count:
 
 ```sh
 ./build-release/j6510_benchmark both 10000000
 ./build-release/j6510_benchmark mixed 5000000
 ```
 
-Current local Release baseline after the first hot-path optimization pass:
+Current local Release baseline after the first cached-block pass:
 
 ```text
 iterations: 10000000
 instructions: 90000000
 nominal 6502 cycles: 270000000
-step 6502 equivalent: ~454 MHz
-run 6502 equivalent:  ~636 MHz
-mixed step equivalent: ~505 MHz
-mixed run equivalent:  ~677 MHz
-block equivalent before caching is currently slower than `run`; `run_block()`
-exists as the terminator-aware foundation for a future block cache.
+step 6502 equivalent:   ~435 MHz
+run 6502 equivalent:    ~644 MHz
+block 6502 equivalent:  ~400 MHz
+cached 6502 equivalent: ~394 MHz
+cached hits/misses/invalidations: 9999999/1/0
+
+mixed step equivalent:   ~479 MHz
+mixed run equivalent:    ~624 MHz
+mixed block equivalent:  ~452 MHz
+mixed cached equivalent: ~419 MHz
+mixed cached hits/misses/invalidations: 24999997/3/0
 ```
+
+`run_cached()` is currently a correctness-first cache of decoded block shape. It
+proves stable hit/miss/invalidations and keeps `step()` semantics, but it still
+executes each instruction through the existing interpreter path. The next
+performance step is an executable cached payload or IR for the hot instructions.
 
 ## External CPU Test Suites
 
