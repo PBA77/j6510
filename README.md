@@ -44,6 +44,20 @@ ctest --test-dir build --output-on-failure
 
 This always runs the local unit and E2E tests.
 
+## Benchmark
+
+```sh
+./build/j6510_benchmark
+```
+
+The benchmark runs a fixed documented-opcode loop and reports throughput as
+equivalent original 6502 MHz, using nominal NMOS 6502 cycle counts for that
+instruction mix. You can pass an iteration count:
+
+```sh
+./build/j6510_benchmark 10000000
+```
+
 ## External CPU Test Suites
 
 The repository does not vendor third-party test binaries or source files.

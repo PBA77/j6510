@@ -32,6 +32,12 @@ target_link_libraries(j6510_tests PRIVATE j6510_core)
 
 add_test(NAME j6510_tests COMMAND j6510_tests)
 
+add_executable(j6510_benchmark
+    tools/benchmark_main.cpp
+)
+
+target_link_libraries(j6510_benchmark PRIVATE j6510_core)
+
 set(KLAUS_FUNCTIONAL_IMAGE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/klaus/6502_functional_test.bin)
 set(KLAUS_DECIMAL_IMAGE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/klaus/6502_decimal_test.bin)
 set(KLAUS_INTERRUPT_IMAGE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/klaus/6502_interrupt_test.bin)
