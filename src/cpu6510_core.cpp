@@ -424,7 +424,7 @@ StepResult Cpu6510::step() {
     return StepResult::Ok;
 }
 
-RunResult Cpu6510::run(uint32_t max_instructions) {
+J6510_FAST_CODE_ATTR RunResult Cpu6510::run(uint32_t max_instructions) {
     RunResult result{};
     const bool fast_path = can_use_fast_run_path();
     for (uint32_t i = 0; i < max_instructions; ++i) {
@@ -720,6 +720,13 @@ Cpu6510::CachedBlock Cpu6510::decode_block(uint16_t pc) {
             block.page_end = static_cast<uint8_t>(last_byte >> 8);
             block.terminator = RunStopReason::ControlFlow;
             ++block.count;
+            if (op.kind == CachedOpKind::JmpAbs) {
+                block.loops_to_start = op.operand == block.start_pc;
+            } else if (op.kind == CachedOpKind::BranchSet || op.kind == CachedOpKind::BranchClear) {
+                const uint16_t next_pc = static_cast<uint16_t>(cursor + info.bytes);
+                const uint16_t branch_target = static_cast<uint16_t>(next_pc + branch_offset(op.operand));
+                block.loops_to_start = branch_target == block.start_pc;
+            }
             disable_ir_for_unsafe_writes();
             return block;
         }
@@ -735,26 +742,63 @@ Cpu6510::CachedBlock Cpu6510::decode_block(uint16_t pc) {
 }
 
 J6510_FAST_CODE_ATTR bool Cpu6510::execute_cached_block(const CachedBlock& block, uint32_t remaining_budget, RunResult& result) {
-    const uint32_t to_execute = block.count < remaining_budget ? block.count : remaining_budget;
     if (block.executable && can_use_fast_run_path()) {
-        ++block_cache_stats_.ir_blocks;
-        block_cache_stats_.ir_instructions += to_execute;
-        if (can_use_direct_memory_path()) {
-            if (block.hot_executable) {
-                execute_cached_block_direct_hot(block, to_execute, result);
+        if (!block.loops_to_start) {
+            const uint32_t to_execute = block.count < remaining_budget ? block.count : remaining_budget;
+            ++block_cache_stats_.ir_blocks;
+            block_cache_stats_.ir_instructions += to_execute;
+            if (can_use_direct_memory_path()) {
+                if (block.hot_executable) {
+                    execute_cached_block_direct_hot(block, to_execute, result);
+                } else {
+                    execute_cached_block_direct(block, to_execute, result);
+                }
             } else {
-                execute_cached_block_direct(block, to_execute, result);
+                for (uint32_t i = 0; i < to_execute; ++i) {
+                    execute_cached_op(block.ops[i]);
+                    ++result.instructions_executed;
+                    result.stop_pc = state_.pc;
+                }
             }
-        } else {
-            for (uint32_t i = 0; i < to_execute; ++i) {
-                execute_cached_op(block.ops[i]);
-                ++result.instructions_executed;
-                result.stop_pc = state_.pc;
+            return true;
+        }
+
+        uint32_t remaining = remaining_budget;
+        while (remaining != 0) {
+            const uint32_t to_execute = block.count < remaining ? block.count : remaining;
+            if (to_execute == 0) {
+                return true;
+            }
+
+            ++block_cache_stats_.ir_blocks;
+            block_cache_stats_.ir_instructions += to_execute;
+            if (can_use_direct_memory_path()) {
+                if (block.hot_executable) {
+                    execute_cached_block_direct_hot(block, to_execute, result);
+                } else {
+                    execute_cached_block_direct(block, to_execute, result);
+                }
+            } else {
+                for (uint32_t i = 0; i < to_execute; ++i) {
+                    execute_cached_op(block.ops[i]);
+                    ++result.instructions_executed;
+                    result.stop_pc = state_.pc;
+                }
+            }
+
+            if (to_execute != block.count || block.terminator != RunStopReason::ControlFlow ||
+                state_.pc != block.start_pc || has_pending_interrupt_work()) {
+                return true;
+            }
+            remaining -= to_execute;
+            if (remaining != 0) {
+                ++block_cache_stats_.hits;
             }
         }
         return true;
     }
 
+    const uint32_t to_execute = block.count < remaining_budget ? block.count : remaining_budget;
     ++block_cache_stats_.fallback_blocks;
     block_cache_stats_.fallback_instructions += to_execute;
     for (uint32_t i = 0; i < to_execute; ++i) {
@@ -1751,7 +1795,7 @@ bool Cpu6510::can_use_fast_run_path() const {
     return !has_pending_interrupt_work();
 }
 
-bool Cpu6510::run_fast_instruction(StepResult& result) {
+J6510_FAST_CODE_ATTR bool Cpu6510::run_fast_instruction(StepResult& result) {
     const uint16_t instruction_pc = state_.pc;
     const uint8_t opcode = fast_fetch8();
 
