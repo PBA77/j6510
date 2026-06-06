@@ -161,7 +161,7 @@ StepResult Cpu6510::step() {
 
     const uint16_t instruction_pc = state_.pc;
     const uint8_t opcode = fetch8();
-    const OpcodeInfo& info = opcode_info(opcode);
+    const OpcodeInfo& info = active_opcode_info(opcode);
 
     switch (info.operation) {
     case Operation::Illegal:
@@ -398,6 +398,9 @@ StepResult Cpu6510::step() {
     }
 
     case Operation::NOP:
+        if (info.mode != AddressingMode::Implied) {
+            (void)read_operand(info.mode);
+        }
         break;
 
     case Operation::BPL:
@@ -430,6 +433,38 @@ StepResult Cpu6510::step() {
 
     case Operation::BEQ:
         branch_if(flag(FLAG_Z));
+        break;
+
+    case Operation::SLO:
+        slo(info.mode);
+        break;
+
+    case Operation::RLA:
+        rla(info.mode);
+        break;
+
+    case Operation::SRE:
+        sre(info.mode);
+        break;
+
+    case Operation::RRA:
+        rra(info.mode);
+        break;
+
+    case Operation::SAX:
+        sax(info.mode);
+        break;
+
+    case Operation::LAX:
+        lax(info.mode);
+        break;
+
+    case Operation::DCP:
+        dcp(info.mode);
+        break;
+
+    case Operation::ISC:
+        isc(info.mode);
         break;
     }
 
@@ -760,7 +795,7 @@ Cpu6510::CachedBlock Cpu6510::decode_block(uint16_t pc) {
     uint16_t cursor = pc;
     while (block.count < 32) {
         const uint8_t opcode = read(cursor);
-        const OpcodeInfo& info = opcode_info(opcode);
+        const OpcodeInfo& info = active_opcode_info(opcode);
         uint16_t operand = 0;
         if (info.bytes == 2) {
             operand = read(static_cast<uint16_t>(cursor + 1));
@@ -2268,6 +2303,70 @@ void Cpu6510::ror(AddressingMode mode) {
     set_zn(result);
 }
 
+void Cpu6510::slo(AddressingMode mode) {
+    const uint16_t address = operand_address(mode);
+    const uint8_t value = read(address);
+    const uint8_t result = static_cast<uint8_t>(value << 1);
+    set_flag(FLAG_C, (value & 0x80) != 0);
+    write(address, result);
+    state_.a = static_cast<uint8_t>(state_.a | result);
+    set_zn(state_.a);
+}
+
+void Cpu6510::rla(AddressingMode mode) {
+    const uint16_t address = operand_address(mode);
+    const uint8_t value = read(address);
+    const uint8_t result = static_cast<uint8_t>((value << 1) | (flag(FLAG_C) ? 1 : 0));
+    set_flag(FLAG_C, (value & 0x80) != 0);
+    write(address, result);
+    state_.a = static_cast<uint8_t>(state_.a & result);
+    set_zn(state_.a);
+}
+
+void Cpu6510::sre(AddressingMode mode) {
+    const uint16_t address = operand_address(mode);
+    const uint8_t value = read(address);
+    const uint8_t result = static_cast<uint8_t>(value >> 1);
+    set_flag(FLAG_C, (value & 0x01) != 0);
+    write(address, result);
+    state_.a = static_cast<uint8_t>(state_.a ^ result);
+    set_zn(state_.a);
+}
+
+void Cpu6510::rra(AddressingMode mode) {
+    const uint16_t address = operand_address(mode);
+    const uint8_t value = read(address);
+    const uint8_t result = static_cast<uint8_t>((value >> 1) | (flag(FLAG_C) ? 0x80 : 0));
+    set_flag(FLAG_C, (value & 0x01) != 0);
+    write(address, result);
+    adc(result);
+}
+
+void Cpu6510::sax(AddressingMode mode) {
+    write(operand_address(mode), static_cast<uint8_t>(state_.a & state_.x));
+}
+
+void Cpu6510::lax(AddressingMode mode) {
+    const uint8_t value = read_operand(mode);
+    state_.a = value;
+    state_.x = value;
+    set_zn(value);
+}
+
+void Cpu6510::dcp(AddressingMode mode) {
+    const uint16_t address = operand_address(mode);
+    const uint8_t value = static_cast<uint8_t>(read(address) - 1);
+    write(address, value);
+    compare(state_.a, value);
+}
+
+void Cpu6510::isc(AddressingMode mode) {
+    const uint16_t address = operand_address(mode);
+    const uint8_t value = static_cast<uint8_t>(read(address) + 1);
+    write(address, value);
+    sbc(value);
+}
+
 void Cpu6510::branch_if(bool condition) {
     const int8_t offset = static_cast<int8_t>(fetch8());
     if (condition) {
@@ -2312,6 +2411,10 @@ uint16_t Cpu6510::operand_address(AddressingMode mode) {
         return 0;
     }
     return 0;
+}
+
+const OpcodeInfo& Cpu6510::active_opcode_info(uint8_t opcode) const {
+    return config_.undocumented_opcodes_enabled ? undocumented_opcode_info(opcode) : opcode_info(opcode);
 }
 
 StepResult Cpu6510::execute_cycle_exact_instruction(uint8_t& cycles) {
@@ -2400,7 +2503,7 @@ StepResult Cpu6510::execute_cycle_exact_instruction(uint8_t& cycles) {
 
     const uint16_t instruction_pc = state_.pc;
     const uint8_t opcode = bus_read(state_.pc++);
-    const OpcodeInfo& info = opcode_info(opcode);
+    const OpcodeInfo& info = active_opcode_info(opcode);
     if (info.operation == Operation::Illegal) {
         state_.pc = instruction_pc;
         return StepResult::IllegalOpcode;
@@ -2548,7 +2651,7 @@ StepResult Cpu6510::execute_cycle_exact_instruction(uint8_t& cycles) {
             dummy_to(state_.pc);
             state_.a = transform(state_.a);
             set_zn(state_.a);
-            return;
+            return state_.a;
         }
 
         uint16_t address = 0;
@@ -2573,6 +2676,26 @@ StepResult Cpu6510::execute_cycle_exact_instruction(uint8_t& cycles) {
             address = static_cast<uint16_t>(base + state_.x);
             break;
         }
+        case AddressingMode::AbsoluteY: {
+            const uint16_t base = read16_at(state_.pc);
+            state_.pc = static_cast<uint16_t>(state_.pc + 2);
+            dummy_to(wrong_indexed_address(base, state_.y));
+            address = static_cast<uint16_t>(base + state_.y);
+            break;
+        }
+        case AddressingMode::IndexedIndirect: {
+            const uint8_t operand = bus_read(state_.pc++);
+            dummy_to(operand);
+            address = read16_zp_at(static_cast<uint8_t>(operand + state_.x));
+            break;
+        }
+        case AddressingMode::IndirectIndexed: {
+            const uint8_t operand = bus_read(state_.pc++);
+            const uint16_t base = read16_zp_at(operand);
+            dummy_to(wrong_indexed_address(base, state_.y));
+            address = static_cast<uint16_t>(base + state_.y);
+            break;
+        }
         default:
             dummy_to(state_.pc);
             break;
@@ -2582,6 +2705,7 @@ StepResult Cpu6510::execute_cycle_exact_instruction(uint8_t& cycles) {
         const uint8_t new_value = transform(old_value);
         bus_write(address, new_value);
         set_zn(new_value);
+        return new_value;
     };
 
     switch (info.operation) {
@@ -2837,7 +2961,12 @@ StepResult Cpu6510::execute_cycle_exact_instruction(uint8_t& cycles) {
         break;
     }
     case Operation::NOP:
-        dummy_to(state_.pc);
+        if (info.mode == AddressingMode::Implied) {
+            dummy_to(state_.pc);
+        } else {
+            uint16_t address = 0;
+            (void)read_operand_exact(info.mode, address);
+        }
         break;
     case Operation::BPL:
     case Operation::BMI:
@@ -2886,6 +3015,68 @@ StepResult Cpu6510::execute_cycle_exact_instruction(uint8_t& cycles) {
             }
             state_.pc = new_pc;
         }
+        break;
+    }
+    case Operation::SLO: {
+        const uint8_t value = rmw_operand_exact(info.mode, [this](uint8_t old_value) {
+            set_flag(FLAG_C, (old_value & 0x80) != 0);
+            return static_cast<uint8_t>(old_value << 1);
+        });
+        state_.a = static_cast<uint8_t>(state_.a | value);
+        set_zn(state_.a);
+        break;
+    }
+    case Operation::RLA: {
+        const uint8_t value = rmw_operand_exact(info.mode, [this](uint8_t old_value) {
+            const uint8_t result = static_cast<uint8_t>((old_value << 1) | (flag(FLAG_C) ? 1 : 0));
+            set_flag(FLAG_C, (old_value & 0x80) != 0);
+            return result;
+        });
+        state_.a = static_cast<uint8_t>(state_.a & value);
+        set_zn(state_.a);
+        break;
+    }
+    case Operation::SRE: {
+        const uint8_t value = rmw_operand_exact(info.mode, [this](uint8_t old_value) {
+            set_flag(FLAG_C, (old_value & 0x01) != 0);
+            return static_cast<uint8_t>(old_value >> 1);
+        });
+        state_.a = static_cast<uint8_t>(state_.a ^ value);
+        set_zn(state_.a);
+        break;
+    }
+    case Operation::RRA: {
+        const uint8_t value = rmw_operand_exact(info.mode, [this](uint8_t old_value) {
+            const uint8_t result = static_cast<uint8_t>((old_value >> 1) | (flag(FLAG_C) ? 0x80 : 0));
+            set_flag(FLAG_C, (old_value & 0x01) != 0);
+            return result;
+        });
+        adc(value);
+        break;
+    }
+    case Operation::SAX:
+        write_operand_exact(info.mode, static_cast<uint8_t>(state_.a & state_.x));
+        break;
+    case Operation::LAX: {
+        uint16_t address = 0;
+        const uint8_t value = read_operand_exact(info.mode, address);
+        state_.a = value;
+        state_.x = value;
+        set_zn(value);
+        break;
+    }
+    case Operation::DCP: {
+        const uint8_t value = rmw_operand_exact(info.mode, [](uint8_t old_value) {
+            return static_cast<uint8_t>(old_value - 1);
+        });
+        compare(state_.a, value);
+        break;
+    }
+    case Operation::ISC: {
+        const uint8_t value = rmw_operand_exact(info.mode, [](uint8_t old_value) {
+            return static_cast<uint8_t>(old_value + 1);
+        });
+        sbc(value);
         break;
     }
     case Operation::Illegal:

@@ -62,6 +62,7 @@ enum class ExecutionMode {
 struct Cpu6510Config {
     bool port_enabled = true;
     ExecutionMode execution_mode = ExecutionMode::InstructionFast;
+    bool undocumented_opcodes_enabled = false;
 };
 
 class Cpu6510;
@@ -291,9 +292,18 @@ private:
     void lsr(AddressingMode mode);
     void rol(AddressingMode mode);
     void ror(AddressingMode mode);
+    void slo(AddressingMode mode);
+    void rla(AddressingMode mode);
+    void sre(AddressingMode mode);
+    void rra(AddressingMode mode);
+    void sax(AddressingMode mode);
+    void lax(AddressingMode mode);
+    void dcp(AddressingMode mode);
+    void isc(AddressingMode mode);
     void branch_if(bool condition);
     void interrupt(uint16_t vector, bool break_flag, uint16_t return_pc);
     uint16_t operand_address(AddressingMode mode);
+    const OpcodeInfo& active_opcode_info(uint8_t opcode) const;
     StepResult execute_cycle_exact_instruction(uint8_t& cycles);
 };
 

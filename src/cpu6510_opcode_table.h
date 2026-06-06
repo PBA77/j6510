@@ -79,6 +79,14 @@ enum class Operation : uint8_t {
     BCS,
     BNE,
     BEQ,
+    SLO,
+    RLA,
+    SRE,
+    RRA,
+    SAX,
+    LAX,
+    DCP,
+    ISC,
 };
 
 struct OpcodeInfo {
@@ -92,6 +100,8 @@ struct OpcodeInfo {
 };
 
 const std::array<OpcodeInfo, 256>& opcode_table();
+const std::array<OpcodeInfo, 256>& undocumented_opcode_table();
 const OpcodeInfo& opcode_info(uint8_t opcode);
+const OpcodeInfo& undocumented_opcode_info(uint8_t opcode);
 
 } // namespace j6510

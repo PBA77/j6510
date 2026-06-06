@@ -10,7 +10,10 @@ adapter, ESP-IDF adapter, or host ISR code in the core.
 ## What Works
 
 - All documented NMOS 6502 opcodes are implemented.
-- Illegal or undocumented opcodes return a controlled `IllegalOpcode` result.
+- Illegal or undocumented opcodes return a controlled `IllegalOpcode` result by
+  default.
+- Stable undocumented NMOS 6502/6510 opcodes can be enabled explicitly through
+  `Cpu6510Config::undocumented_opcodes_enabled`.
 - All common 6502 addressing modes are implemented, including zero-page wrap,
   relative branches, indexed indirect modes, and the NMOS `JMP ($xxFF)` bug.
 - Binary and decimal `ADC/SBC` are implemented.
@@ -33,6 +36,18 @@ Cpu6510 cpu(bus, Cpu6510Config{false});
 
 That disables the 6510 port and leaves `$0000/$0001` as normal RAM bus
 addresses.
+
+For software that depends on stable undocumented NMOS opcodes, enable the
+explicit compatibility profile:
+
+```cpp
+Cpu6510 cpu(bus, Cpu6510Config{true, ExecutionMode::InstructionFast, true});
+```
+
+The profile covers the common stable families `SLO`, `RLA`, `SRE`, `RRA`,
+`SAX`, `LAX`, `DCP`, `ISC`, unofficial immediate `SBC`, and operand/implied
+`NOP` variants. Unstable analog-effect opcodes and `KIL/JAM` remain unsupported
+and still report `IllegalOpcode`.
 
 The default execution mode remains the instruction-oriented fast path. For a
 cycle-counted reference path, construct the CPU with `CycleExact`:
@@ -104,6 +119,17 @@ cmake --build build-release --target j6510_benchmark
 ./build-release/j6510_benchmark both
 ```
 
+For a sequential Release benchmark run with longer default durations:
+
+```sh
+./scripts/run_release_benchmarks.sh
+```
+
+The script builds `j6510_benchmark` once, then runs `both`, `mixed`, and
+`realish` one after another. Its default iteration counts are twice the manual
+examples below and can be overridden with `BOTH_ITERATIONS`, `MIXED_ITERATIONS`,
+and `REALISH_ITERATIONS`.
+
 The benchmark runs fixed documented-opcode loops and reports throughput as
 equivalent original 6502 MHz, using nominal NMOS 6502 cycle counts for those
 instruction mixes. It can compare public `step()` execution, batch `run()`,
@@ -118,31 +144,34 @@ reference instruction path. You can pass an iteration count:
 ```
 
 Current local Release baseline after the first cached-block IR pass, measured
-on an Apple M1 Max:
+on an Apple M1 Max with `./scripts/run_release_benchmarks.sh`:
 
 ```text
-iterations: 10000000
-instructions: 90000000
-nominal 6502 cycles: 270000000
-step 6502 equivalent:   ~444 MHz
-run 6502 equivalent:    ~651 MHz
-block 6502 equivalent:  ~460 MHz
-cached 6502 equivalent: ~1448 MHz
-cached hits/misses/invalidations: 9999999/1/0
-cached IR/fallback instructions: 90000000/0
+both iterations: 20000000
+instructions: 180000000
+nominal 6502 cycles: 540000000
+step 6502 equivalent:   ~438 MHz
+run 6502 equivalent:    ~647 MHz
+block 6502 equivalent:  ~446 MHz
+cached 6502 equivalent: ~1390 MHz
+cached hits/misses/invalidations: 19999999/1/0
+cached IR/fallback instructions: 180000000/0
 
-mixed step equivalent:   ~501 MHz
-mixed run equivalent:    ~715 MHz
-mixed block equivalent:  ~500 MHz
-mixed cached equivalent: ~1468 MHz
-mixed cached hits/misses/invalidations: 24999997/3/0
-mixed cached IR/fallback instructions: 150000000/0
+mixed iterations: 10000000
+mixed step equivalent:   ~502 MHz
+mixed run equivalent:    ~727 MHz
+mixed block equivalent:  ~499 MHz
+mixed cached equivalent: ~1165 MHz
+mixed cached hits/misses/invalidations: 49999997/3/0
+mixed cached IR/fallback instructions: 300000000/0
 
-realish step equivalent:   ~425 MHz
-realish run equivalent:    ~427 MHz
+realish iterations: 200000
+realish step equivalent:   ~417 MHz
+realish run equivalent:    ~433 MHz
 realish block equivalent:  ~329 MHz
-realish cached equivalent: ~962 MHz
-realish cached IR/fallback instructions: 29200000/0
+realish cached equivalent: ~946 MHz
+realish cached hits/misses/invalidations: 12999996/4/0
+realish cached IR/fallback instructions: 58400000/0
 ```
 
 `run_cached()` now uses a small executable cached payload for selected hot

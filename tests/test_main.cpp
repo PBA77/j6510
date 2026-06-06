@@ -174,6 +174,91 @@ void test_opcode_table_has_all_legal_opcodes() {
     require(table_legal_count == 151, "opcode table exposes exactly 151 legal opcodes");
 }
 
+void test_undocumented_opcode_profile_metadata() {
+    require(opcode_info(0x07).operation == Operation::Illegal, "documented opcode table keeps SLO illegal");
+    require(undocumented_opcode_info(0x07).operation == Operation::SLO, "undocumented table exposes SLO zero page");
+    require(undocumented_opcode_info(0xA7).operation == Operation::LAX, "undocumented table exposes LAX zero page");
+    require(undocumented_opcode_info(0xEB).operation == Operation::SBC, "undocumented table exposes unofficial SBC immediate");
+    require(undocumented_opcode_info(0x1C).operation == Operation::NOP, "undocumented table exposes operand NOP");
+
+    RamBus bus;
+    bus.set_reset_vector(0x0200);
+    bus.memory[0x0200] = 0x07;
+    bus.memory[0x0201] = 0x10;
+    Cpu6510 default_cpu(bus);
+    default_cpu.reset();
+    require(default_cpu.step() == StepResult::IllegalOpcode, "default CPU keeps undocumented opcode illegal");
+    require(default_cpu.state().pc == 0x0200, "default illegal undocumented opcode leaves PC at opcode");
+
+    Cpu6510 enabled_cpu(bus, Cpu6510Config{true, ExecutionMode::InstructionFast, true});
+    enabled_cpu.reset();
+    bus.memory[0x0010] = 0x41;
+    require(enabled_cpu.step() == StepResult::Ok, "enabled CPU executes undocumented opcode");
+    require(enabled_cpu.state().pc == 0x0202, "enabled undocumented opcode consumes operand");
+}
+
+void test_undocumented_opcode_families() {
+    const auto run_one = [](uint8_t opcode,
+                            uint8_t initial_a,
+                            uint8_t initial_x,
+                            uint8_t initial_p,
+                            uint8_t memory_value,
+                            uint8_t expected_a,
+                            uint8_t expected_x,
+                            uint8_t expected_memory,
+                            uint8_t expected_set,
+                            uint8_t expected_clear,
+                            const std::string& context) {
+        RamBus bus;
+        bus.set_reset_vector(0x0200);
+        const uint8_t program[] = {opcode, 0x10};
+        bus.load(0x0200, program, sizeof(program));
+        bus.memory[0x0010] = memory_value;
+        Cpu6510 cpu(bus, Cpu6510Config{false, ExecutionMode::InstructionFast, true});
+        cpu.reset();
+        cpu.state().a = initial_a;
+        cpu.state().x = initial_x;
+        cpu.state().p = static_cast<uint8_t>(initial_p | FLAG_U);
+
+        require(cpu.step() == StepResult::Ok, context + " executes");
+        require(cpu.state().pc == 0x0202, context + " advances PC");
+        require(cpu.state().a == expected_a, context + " A");
+        require(cpu.state().x == expected_x, context + " X");
+        require(bus.memory[0x0010] == expected_memory, context + " memory");
+        require((cpu.state().p & expected_set) == expected_set, context + " expected flags set");
+        require((cpu.state().p & expected_clear) == 0, context + " expected flags clear");
+    };
+
+    run_one(0x07, 0x01, 0x00, 0, 0x41, 0x83, 0x00, 0x82, FLAG_N, FLAG_C | FLAG_Z, "SLO zp");
+    run_one(0x27, 0xF0, 0x00, FLAG_C, 0x80, 0x00, 0x00, 0x01, FLAG_C | FLAG_Z, FLAG_N, "RLA zp");
+    run_one(0x47, 0xFF, 0x00, 0, 0x03, 0xFE, 0x00, 0x01, FLAG_C | FLAG_N, FLAG_Z, "SRE zp");
+    run_one(0x67, 0x10, 0x00, 0, 0x02, 0x11, 0x00, 0x01, 0, FLAG_C | FLAG_Z | FLAG_N | FLAG_V, "RRA zp");
+    run_one(0x87, 0xF0, 0x0F, 0, 0xAA, 0xF0, 0x0F, 0x00, 0, FLAG_Z | FLAG_N | FLAG_C | FLAG_V, "SAX zp");
+    run_one(0xA7, 0x00, 0x00, 0, 0x80, 0x80, 0x80, 0x80, FLAG_N, FLAG_Z, "LAX zp");
+    run_one(0xC7, 0x10, 0x00, 0, 0x11, 0x10, 0x00, 0x10, FLAG_C | FLAG_Z, FLAG_N, "DCP zp");
+    run_one(0xE7, 0x20, 0x00, FLAG_C, 0x0F, 0x10, 0x00, 0x10, FLAG_C, FLAG_Z | FLAG_N | FLAG_V, "ISC zp");
+
+    {
+        RamBus bus;
+        bus.set_reset_vector(0x0300);
+        const uint8_t program[] = {
+            0xA9, 0x20, // LDA #$20
+            0x38,       // SEC
+            0xEB, 0x01, // unofficial SBC #$01
+            0x80, 0xFF, // NOP #$FF
+            0x04, 0x10, // NOP $10
+            0x1A,       // NOP
+        };
+        bus.load(0x0300, program, sizeof(program));
+        Cpu6510 cpu(bus, Cpu6510Config{false, ExecutionMode::InstructionFast, true});
+        cpu.reset();
+        run_steps(cpu, 6, "unofficial SBC and NOP family");
+        require(cpu.state().a == 0x1F, "unofficial SBC immediate subtracts");
+        require(cpu.state().pc == 0x030A, "NOP family consumes operands");
+        require((cpu.state().p & FLAG_C) != 0, "unofficial SBC keeps carry when no borrow");
+    }
+}
+
 void test_basic_instructions_end_to_end() {
     RamBus bus;
     bus.set_reset_vector(0x0200);
@@ -1479,6 +1564,97 @@ void test_run_cached_realish_stress_matches_step() {
     require(cached_cpu.block_cache_stats().hits > 0, "run_cached realish stress records cache hits");
 }
 
+void test_undocumented_run_paths_match_step() {
+    RamBus step_bus;
+    RamBus run_bus;
+    RamBus cached_bus;
+    step_bus.set_reset_vector(0x1A00);
+    run_bus.set_reset_vector(0x1A00);
+    cached_bus.set_reset_vector(0x1A00);
+    const uint8_t program[] = {
+        0xA9, 0x11, // LDA #$11
+        0xA2, 0x0F, // LDX #$0F
+        0x87, 0x20, // SAX $20 -> $01
+        0xA9, 0x40, // LDA #$40
+        0x07, 0x20, // SLO $20 -> mem $02, A $42
+        0xA7, 0x20, // LAX $20 -> A/X $02
+        0xC7, 0x20, // DCP $20 -> mem $01, compare A
+        0xE7, 0x20, // ISC $20 -> mem $02, SBC
+        0x80, 0x99, // NOP #$99
+        0x02,       // illegal sentinel
+    };
+    step_bus.load(0x1A00, program, sizeof(program));
+    run_bus.load(0x1A00, program, sizeof(program));
+    cached_bus.load(0x1A00, program, sizeof(program));
+    const Cpu6510Config config{false, ExecutionMode::InstructionFast, true};
+    Cpu6510 step_cpu(step_bus, config);
+    Cpu6510 run_cpu(run_bus, config);
+    Cpu6510 cached_cpu(cached_bus, config);
+    step_cpu.reset();
+    run_cpu.reset();
+    cached_cpu.reset();
+
+    for (int i = 0; i < 9; ++i) {
+        require(step_cpu.step() == StepResult::Ok, "reference step for undocumented run paths executes");
+    }
+    const RunResult run_result = run_cpu.run(9);
+    const RunResult cached_result = cached_cpu.run_cached(9);
+
+    require(run_result.result == StepResult::Ok, "run undocumented path returns Ok");
+    require(cached_result.result == StepResult::Ok, "run_cached undocumented path returns Ok");
+    require_same_state(step_cpu.state(), run_cpu.state(), "run undocumented vs step");
+    require_same_state(step_cpu.state(), cached_cpu.state(), "run_cached undocumented vs step");
+    require(step_bus.memory == run_bus.memory, "run undocumented memory");
+    require(step_bus.memory == cached_bus.memory, "run_cached undocumented memory");
+    require(cached_cpu.block_cache_stats().fallback_instructions == 9, "run_cached undocumented falls back to interpreter");
+
+    require(step_cpu.step() == StepResult::IllegalOpcode, "reference step reaches undocumented profile sentinel");
+    require(run_cpu.run(1).result == StepResult::IllegalOpcode, "run reaches undocumented profile sentinel");
+    require(cached_cpu.run_cached(1).result == StepResult::IllegalOpcode, "run_cached reaches undocumented profile sentinel");
+}
+
+void test_cycle_exact_undocumented_representatives() {
+    {
+        RamBus bus;
+        bus.set_reset_vector(0x0200);
+        const uint8_t program[] = {0x07, 0x10}; // SLO $10
+        bus.load(0x0200, program, sizeof(program));
+        bus.memory[0x0010] = 0x41;
+        Cpu6510 cpu(bus, Cpu6510Config{false, ExecutionMode::CycleExact, true});
+        cpu.reset();
+        cpu.state().a = 0x01;
+        require(cpu.step() == StepResult::Ok, "cycle exact SLO zero page executes");
+        require(cpu.cycle() == 5, "cycle exact SLO zero page cycle count");
+        require(cpu.state().a == 0x83, "cycle exact SLO updates A");
+        require(bus.memory[0x0010] == 0x82, "cycle exact SLO writes shifted memory");
+    }
+    {
+        RamBus bus;
+        bus.set_reset_vector(0x0200);
+        const uint8_t program[] = {0xA7, 0x10}; // LAX $10
+        bus.load(0x0200, program, sizeof(program));
+        bus.memory[0x0010] = 0x80;
+        Cpu6510 cpu(bus, Cpu6510Config{false, ExecutionMode::CycleExact, true});
+        cpu.reset();
+        require(cpu.step() == StepResult::Ok, "cycle exact LAX zero page executes");
+        require(cpu.cycle() == 3, "cycle exact LAX zero page cycle count");
+        require(cpu.state().a == 0x80, "cycle exact LAX updates A");
+        require(cpu.state().x == 0x80, "cycle exact LAX updates X");
+        require((cpu.state().p & FLAG_N) != 0, "cycle exact LAX sets N");
+    }
+    {
+        RamBus bus;
+        bus.set_reset_vector(0x0200);
+        const uint8_t program[] = {0x80, 0x55}; // NOP #$55
+        bus.load(0x0200, program, sizeof(program));
+        Cpu6510 cpu(bus, Cpu6510Config{false, ExecutionMode::CycleExact, true});
+        cpu.reset();
+        require(cpu.step() == StepResult::Ok, "cycle exact immediate NOP executes");
+        require(cpu.cycle() == 2, "cycle exact immediate NOP cycle count");
+        require(cpu.state().pc == 0x0202, "cycle exact immediate NOP consumes operand");
+    }
+}
+
 void test_cycle_exact_fixed_instruction_cycles() {
     const auto run_single = [](const uint8_t* program, uint16_t size, uint16_t pc, int expected_cycles, const std::string& context) {
         RamBus bus;
@@ -1700,6 +1876,8 @@ int main() {
     test_stack_wraps_on_page_one();
     test_opcode_metadata_and_illegal_opcode();
     test_opcode_table_has_all_legal_opcodes();
+    test_undocumented_opcode_profile_metadata();
+    test_undocumented_opcode_families();
     test_basic_instructions_end_to_end();
     test_jsr_and_rts();
     test_brk_and_rti();
@@ -1728,6 +1906,7 @@ int main() {
     test_cycle_exact_fixed_instruction_cycles();
     test_cycle_exact_variable_cycles();
     test_cycle_exact_bus_sequence_for_rmw_and_branch();
+    test_cycle_exact_undocumented_representatives();
 #if J6510_ENABLE_BLOCK_CACHE
     test_run_cached_matches_step_and_tracks_cache_stats();
     test_run_cached_hits_and_invalidates_after_write();
@@ -1738,6 +1917,7 @@ int main() {
     test_run_cached_ir_indexed_loads_match_step();
     test_run_cached_ir_adc_cmp_inc_match_step();
     test_run_cached_realish_stress_matches_step();
+    test_undocumented_run_paths_match_step();
 #endif
 
     std::cout << "All j6510 tests passed\n";

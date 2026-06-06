@@ -21,7 +21,8 @@ constexpr bool is_read_page_cross_candidate(Operation operation, AddressingMode 
         operation == Operation::LDY || operation == Operation::AND ||
         operation == Operation::ORA || operation == Operation::EOR ||
         operation == Operation::ADC || operation == Operation::SBC ||
-        operation == Operation::CMP;
+        operation == Operation::CMP || operation == Operation::LAX ||
+        operation == Operation::NOP;
     return read_operation &&
            (mode == AddressingMode::AbsoluteX || mode == AddressingMode::AbsoluteY ||
             mode == AddressingMode::IndirectIndexed);
@@ -53,6 +54,12 @@ constexpr uint8_t nominal_cycles(Operation operation, AddressingMode mode) {
     case Operation::LSR:
     case Operation::ROL:
     case Operation::ROR:
+    case Operation::SLO:
+    case Operation::RLA:
+    case Operation::SRE:
+    case Operation::RRA:
+    case Operation::DCP:
+    case Operation::ISC:
         if (mode == AddressingMode::Accumulator) {
             return 2;
         }
@@ -64,6 +71,9 @@ constexpr uint8_t nominal_cycles(Operation operation, AddressingMode mode) {
         }
         if (mode == AddressingMode::Absolute) {
             return 6;
+        }
+        if (mode == AddressingMode::IndexedIndirect || mode == AddressingMode::IndirectIndexed) {
+            return 8;
         }
         return 7;
     case Operation::INC:
@@ -97,6 +107,10 @@ constexpr uint8_t nominal_cycles(Operation operation, AddressingMode mode) {
         return 5;
     case Operation::STX:
     case Operation::STY:
+    case Operation::SAX:
+        if (mode == AddressingMode::IndexedIndirect) {
+            return 6;
+        }
         if (mode == AddressingMode::ZeroPage) {
             return 3;
         }
@@ -104,6 +118,26 @@ constexpr uint8_t nominal_cycles(Operation operation, AddressingMode mode) {
             return 4;
         }
         return 4;
+    case Operation::NOP:
+        if (mode == AddressingMode::Implied) {
+            return 2;
+        }
+        if (mode == AddressingMode::Immediate) {
+            return 2;
+        }
+        if (mode == AddressingMode::ZeroPage) {
+            return 3;
+        }
+        if (mode == AddressingMode::ZeroPageX) {
+            return 4;
+        }
+        if (mode == AddressingMode::Absolute) {
+            return 4;
+        }
+        if (mode == AddressingMode::AbsoluteX) {
+            return 4;
+        }
+        return 2;
     default:
         break;
     }
@@ -320,6 +354,111 @@ std::array<OpcodeInfo, 256> make_opcode_table() {
     return table;
 }
 
+std::array<OpcodeInfo, 256> make_undocumented_opcode_table() {
+    std::array<OpcodeInfo, 256> table = make_opcode_table();
+
+    auto op = [&table](uint8_t opcode, Operation operation, AddressingMode mode, const char* mnemonic, uint8_t bytes) {
+        table[opcode] = {operation,
+                         mode,
+                         mnemonic,
+                         bytes,
+                         nominal_cycles(operation, mode),
+                         is_branch(operation),
+                         is_read_page_cross_candidate(operation, mode)};
+    };
+
+    op(0x03, Operation::SLO, AddressingMode::IndexedIndirect, "SLO", 2);
+    op(0x07, Operation::SLO, AddressingMode::ZeroPage, "SLO", 2);
+    op(0x0F, Operation::SLO, AddressingMode::Absolute, "SLO", 3);
+    op(0x13, Operation::SLO, AddressingMode::IndirectIndexed, "SLO", 2);
+    op(0x17, Operation::SLO, AddressingMode::ZeroPageX, "SLO", 2);
+    op(0x1B, Operation::SLO, AddressingMode::AbsoluteY, "SLO", 3);
+    op(0x1F, Operation::SLO, AddressingMode::AbsoluteX, "SLO", 3);
+
+    op(0x23, Operation::RLA, AddressingMode::IndexedIndirect, "RLA", 2);
+    op(0x27, Operation::RLA, AddressingMode::ZeroPage, "RLA", 2);
+    op(0x2F, Operation::RLA, AddressingMode::Absolute, "RLA", 3);
+    op(0x33, Operation::RLA, AddressingMode::IndirectIndexed, "RLA", 2);
+    op(0x37, Operation::RLA, AddressingMode::ZeroPageX, "RLA", 2);
+    op(0x3B, Operation::RLA, AddressingMode::AbsoluteY, "RLA", 3);
+    op(0x3F, Operation::RLA, AddressingMode::AbsoluteX, "RLA", 3);
+
+    op(0x43, Operation::SRE, AddressingMode::IndexedIndirect, "SRE", 2);
+    op(0x47, Operation::SRE, AddressingMode::ZeroPage, "SRE", 2);
+    op(0x4F, Operation::SRE, AddressingMode::Absolute, "SRE", 3);
+    op(0x53, Operation::SRE, AddressingMode::IndirectIndexed, "SRE", 2);
+    op(0x57, Operation::SRE, AddressingMode::ZeroPageX, "SRE", 2);
+    op(0x5B, Operation::SRE, AddressingMode::AbsoluteY, "SRE", 3);
+    op(0x5F, Operation::SRE, AddressingMode::AbsoluteX, "SRE", 3);
+
+    op(0x63, Operation::RRA, AddressingMode::IndexedIndirect, "RRA", 2);
+    op(0x67, Operation::RRA, AddressingMode::ZeroPage, "RRA", 2);
+    op(0x6F, Operation::RRA, AddressingMode::Absolute, "RRA", 3);
+    op(0x73, Operation::RRA, AddressingMode::IndirectIndexed, "RRA", 2);
+    op(0x77, Operation::RRA, AddressingMode::ZeroPageX, "RRA", 2);
+    op(0x7B, Operation::RRA, AddressingMode::AbsoluteY, "RRA", 3);
+    op(0x7F, Operation::RRA, AddressingMode::AbsoluteX, "RRA", 3);
+
+    op(0x83, Operation::SAX, AddressingMode::IndexedIndirect, "SAX", 2);
+    op(0x87, Operation::SAX, AddressingMode::ZeroPage, "SAX", 2);
+    op(0x8F, Operation::SAX, AddressingMode::Absolute, "SAX", 3);
+    op(0x97, Operation::SAX, AddressingMode::ZeroPageY, "SAX", 2);
+
+    op(0xA3, Operation::LAX, AddressingMode::IndexedIndirect, "LAX", 2);
+    op(0xA7, Operation::LAX, AddressingMode::ZeroPage, "LAX", 2);
+    op(0xAF, Operation::LAX, AddressingMode::Absolute, "LAX", 3);
+    op(0xB3, Operation::LAX, AddressingMode::IndirectIndexed, "LAX", 2);
+    op(0xB7, Operation::LAX, AddressingMode::ZeroPageY, "LAX", 2);
+    op(0xBF, Operation::LAX, AddressingMode::AbsoluteY, "LAX", 3);
+
+    op(0xC3, Operation::DCP, AddressingMode::IndexedIndirect, "DCP", 2);
+    op(0xC7, Operation::DCP, AddressingMode::ZeroPage, "DCP", 2);
+    op(0xCF, Operation::DCP, AddressingMode::Absolute, "DCP", 3);
+    op(0xD3, Operation::DCP, AddressingMode::IndirectIndexed, "DCP", 2);
+    op(0xD7, Operation::DCP, AddressingMode::ZeroPageX, "DCP", 2);
+    op(0xDB, Operation::DCP, AddressingMode::AbsoluteY, "DCP", 3);
+    op(0xDF, Operation::DCP, AddressingMode::AbsoluteX, "DCP", 3);
+
+    op(0xE3, Operation::ISC, AddressingMode::IndexedIndirect, "ISC", 2);
+    op(0xE7, Operation::ISC, AddressingMode::ZeroPage, "ISC", 2);
+    op(0xEB, Operation::SBC, AddressingMode::Immediate, "SBC", 2);
+    op(0xEF, Operation::ISC, AddressingMode::Absolute, "ISC", 3);
+    op(0xF3, Operation::ISC, AddressingMode::IndirectIndexed, "ISC", 2);
+    op(0xF7, Operation::ISC, AddressingMode::ZeroPageX, "ISC", 2);
+    op(0xFB, Operation::ISC, AddressingMode::AbsoluteY, "ISC", 3);
+    op(0xFF, Operation::ISC, AddressingMode::AbsoluteX, "ISC", 3);
+
+    op(0x04, Operation::NOP, AddressingMode::ZeroPage, "NOP", 2);
+    op(0x0C, Operation::NOP, AddressingMode::Absolute, "NOP", 3);
+    op(0x14, Operation::NOP, AddressingMode::ZeroPageX, "NOP", 2);
+    op(0x1A, Operation::NOP, AddressingMode::Implied, "NOP", 1);
+    op(0x1C, Operation::NOP, AddressingMode::AbsoluteX, "NOP", 3);
+    op(0x34, Operation::NOP, AddressingMode::ZeroPageX, "NOP", 2);
+    op(0x3A, Operation::NOP, AddressingMode::Implied, "NOP", 1);
+    op(0x3C, Operation::NOP, AddressingMode::AbsoluteX, "NOP", 3);
+    op(0x44, Operation::NOP, AddressingMode::ZeroPage, "NOP", 2);
+    op(0x54, Operation::NOP, AddressingMode::ZeroPageX, "NOP", 2);
+    op(0x5A, Operation::NOP, AddressingMode::Implied, "NOP", 1);
+    op(0x5C, Operation::NOP, AddressingMode::AbsoluteX, "NOP", 3);
+    op(0x64, Operation::NOP, AddressingMode::ZeroPage, "NOP", 2);
+    op(0x74, Operation::NOP, AddressingMode::ZeroPageX, "NOP", 2);
+    op(0x7A, Operation::NOP, AddressingMode::Implied, "NOP", 1);
+    op(0x7C, Operation::NOP, AddressingMode::AbsoluteX, "NOP", 3);
+    op(0x80, Operation::NOP, AddressingMode::Immediate, "NOP", 2);
+    op(0x82, Operation::NOP, AddressingMode::Immediate, "NOP", 2);
+    op(0x89, Operation::NOP, AddressingMode::Immediate, "NOP", 2);
+    op(0xC2, Operation::NOP, AddressingMode::Immediate, "NOP", 2);
+    op(0xD4, Operation::NOP, AddressingMode::ZeroPageX, "NOP", 2);
+    op(0xDA, Operation::NOP, AddressingMode::Implied, "NOP", 1);
+    op(0xDC, Operation::NOP, AddressingMode::AbsoluteX, "NOP", 3);
+    op(0xE2, Operation::NOP, AddressingMode::Immediate, "NOP", 2);
+    op(0xF4, Operation::NOP, AddressingMode::ZeroPageX, "NOP", 2);
+    op(0xFA, Operation::NOP, AddressingMode::Implied, "NOP", 1);
+    op(0xFC, Operation::NOP, AddressingMode::AbsoluteX, "NOP", 3);
+
+    return table;
+}
+
 } // namespace
 
 const std::array<OpcodeInfo, 256>& opcode_table() {
@@ -327,8 +466,17 @@ const std::array<OpcodeInfo, 256>& opcode_table() {
     return table;
 }
 
+const std::array<OpcodeInfo, 256>& undocumented_opcode_table() {
+    static const auto table = make_undocumented_opcode_table();
+    return table;
+}
+
 const OpcodeInfo& opcode_info(uint8_t opcode) {
     return opcode_table()[opcode];
+}
+
+const OpcodeInfo& undocumented_opcode_info(uint8_t opcode) {
+    return undocumented_opcode_table()[opcode];
 }
 
 } // namespace j6510
