@@ -6,6 +6,8 @@ namespace j6510 {
 
 namespace {
 
+#if J6510_ENABLE_BLOCK_CACHE
+
 uint16_t make_branch_operand(uint16_t operand, uint8_t flag) {
     return static_cast<uint16_t>((operand << 8) | flag);
 }
@@ -64,6 +66,8 @@ uint8_t compare_flags(uint8_t p, uint8_t lhs, uint8_t rhs) {
     p = with_flag(p, FLAG_C, lhs >= rhs);
     return with_zn(p, result);
 }
+
+#endif
 
 } // namespace
 
@@ -440,7 +444,8 @@ RunResult Cpu6510::run(uint32_t max_instructions) {
     return result;
 }
 
-RunResult Cpu6510::run_cached(uint32_t max_instructions) {
+J6510_FAST_CODE_ATTR RunResult Cpu6510::run_cached(uint32_t max_instructions) {
+#if J6510_ENABLE_BLOCK_CACHE
     RunResult result{};
     while (result.instructions_executed < max_instructions) {
         if (has_pending_interrupt_work()) {
@@ -468,18 +473,28 @@ RunResult Cpu6510::run_cached(uint32_t max_instructions) {
     }
     result.stop_pc = state_.pc;
     return result;
+#else
+    return run(max_instructions);
+#endif
 }
 
 const BlockCacheStats& Cpu6510::block_cache_stats() const {
+#if J6510_ENABLE_BLOCK_CACHE
     return block_cache_stats_;
+#else
+    static const BlockCacheStats empty_stats{};
+    return empty_stats;
+#endif
 }
 
 void Cpu6510::clear_block_cache() {
+#if J6510_ENABLE_BLOCK_CACHE
     for (auto& block : block_cache_) {
         block.valid = false;
     }
     cached_page_use_count_.fill(0);
     valid_cached_blocks_ = 0;
+#endif
 }
 
 BlockRunResult Cpu6510::run_block(uint32_t max_instructions) {
@@ -576,9 +591,12 @@ void Cpu6510::write(uint16_t address, uint8_t value) {
         return;
     }
     bus_.write(address, value);
+#if J6510_ENABLE_BLOCK_CACHE
     invalidate_block_cache_for_write(address);
+#endif
 }
 
+#if J6510_ENABLE_BLOCK_CACHE
 void Cpu6510::invalidate_block_cache_for_write(uint16_t address) {
     if (valid_cached_blocks_ == 0) {
         return;
@@ -716,7 +734,7 @@ Cpu6510::CachedBlock Cpu6510::decode_block(uint16_t pc) {
     return block;
 }
 
-bool Cpu6510::execute_cached_block(const CachedBlock& block, uint32_t remaining_budget, RunResult& result) {
+J6510_FAST_CODE_ATTR bool Cpu6510::execute_cached_block(const CachedBlock& block, uint32_t remaining_budget, RunResult& result) {
     const uint32_t to_execute = block.count < remaining_budget ? block.count : remaining_budget;
     if (block.executable && can_use_fast_run_path()) {
         ++block_cache_stats_.ir_blocks;
@@ -1003,13 +1021,21 @@ bool Cpu6510::can_use_direct_memory_path() const {
     return direct_memory_ && !config_.port_enabled;
 }
 
+#endif
+
 void Cpu6510::direct_write(uint16_t address, uint8_t value) {
     direct_memory_[address] = value;
+#if J6510_ENABLE_BLOCK_CACHE
     const uint8_t page = static_cast<uint8_t>(address >> 8);
     if (valid_cached_blocks_ != 0 && cached_page_use_count_[page] != 0) {
         invalidate_block_cache_for_write(address);
     }
+#else
+    (void)address;
+#endif
 }
+
+#if J6510_ENABLE_BLOCK_CACHE
 
 void Cpu6510::execute_cached_op(const CachedOp& op) {
     switch (op.kind) {
@@ -1225,7 +1251,9 @@ void Cpu6510::execute_cached_op(const CachedOp& op) {
     }
 }
 
-void Cpu6510::execute_cached_block_direct_hot(const CachedBlock& block, uint32_t to_execute, RunResult& result) {
+J6510_FAST_CODE_ATTR void Cpu6510::execute_cached_block_direct_hot(const CachedBlock& block,
+                                                                    uint32_t to_execute,
+                                                                    RunResult& result) {
     uint8_t* memory = direct_memory_;
     uint8_t a = state_.a;
     uint8_t x = state_.x;
@@ -1387,7 +1415,9 @@ void Cpu6510::execute_cached_block_direct_hot(const CachedBlock& block, uint32_t
     result.stop_pc = pc;
 }
 
-void Cpu6510::execute_cached_block_direct(const CachedBlock& block, uint32_t to_execute, RunResult& result) {
+J6510_FAST_CODE_ATTR void Cpu6510::execute_cached_block_direct(const CachedBlock& block,
+                                                                uint32_t to_execute,
+                                                                RunResult& result) {
     uint8_t* memory = direct_memory_;
     uint8_t a = state_.a;
     uint8_t x = state_.x;
@@ -1633,6 +1663,7 @@ void Cpu6510::execute_cached_block_direct(const CachedBlock& block, uint32_t to_
     result.instructions_executed += to_execute;
     result.stop_pc = pc;
 }
+#endif
 
 uint8_t Cpu6510::fetch8() {
     return read(state_.pc++);
