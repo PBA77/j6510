@@ -1206,6 +1206,8 @@ void test_run_cached_reports_ir_and_fallback_coverage() {
     require(fallback_stats.ir_instructions == 0, "run_cached fallback program avoids IR instructions");
     require(fallback_stats.fallback_blocks > 0, "run_cached records fallback block");
     require(fallback_stats.fallback_instructions == 3, "run_cached records fallback instructions");
+    require(fallback_stats.fallback_opcodes[0x08] == 1, "run_cached records fallback opcode histogram");
+    require(fallback_stats.unsupported_fallback_opcodes[0x08] == 1, "run_cached records unsupported fallback opcode histogram");
 }
 
 void test_run_cached_ir_flags_and_branches_match_step() {

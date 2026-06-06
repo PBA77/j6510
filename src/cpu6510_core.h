@@ -81,6 +81,8 @@ struct BlockCacheStats {
     uint64_t fallback_blocks = 0;
     uint64_t ir_instructions = 0;
     uint64_t fallback_instructions = 0;
+    std::array<uint64_t, 256> fallback_opcodes = {};
+    std::array<uint64_t, 256> unsupported_fallback_opcodes = {};
 };
 
 class Cpu6510 {

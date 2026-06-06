@@ -693,6 +693,12 @@ bool Cpu6510::execute_cached_block(const CachedBlock& block, uint32_t remaining_
     ++block_cache_stats_.fallback_blocks;
     block_cache_stats_.fallback_instructions += to_execute;
     for (uint32_t i = 0; i < to_execute; ++i) {
+        ++block_cache_stats_.fallback_opcodes[block.opcodes[i]];
+        if (block.ops[i].kind == CachedOpKind::Fallback) {
+            ++block_cache_stats_.unsupported_fallback_opcodes[block.opcodes[i]];
+        }
+    }
+    for (uint32_t i = 0; i < to_execute; ++i) {
         StepResult step_result = StepResult::Ok;
         const uint16_t pc_before = state_.pc;
         if (!can_use_fast_run_path() || !run_fast_instruction(step_result)) {
