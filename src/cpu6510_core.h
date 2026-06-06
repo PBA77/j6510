@@ -82,6 +82,7 @@ public:
 
 private:
     Bus& bus_;
+    uint8_t* direct_memory_ = nullptr;
     Cpu6510Config config_{};
     Cpu6510State state_{};
     InterruptState interrupts_{};

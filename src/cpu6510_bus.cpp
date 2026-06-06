@@ -2,12 +2,20 @@
 
 namespace j6510 {
 
+uint8_t* Bus::direct_memory() {
+    return nullptr;
+}
+
 uint8_t RamBus::read(uint16_t address) {
     return memory[address];
 }
 
 void RamBus::write(uint16_t address, uint8_t value) {
     memory[address] = value;
+}
+
+uint8_t* RamBus::direct_memory() {
+    return memory.data();
 }
 
 void RamBus::load(uint16_t start, const uint8_t* data, uint16_t size) {

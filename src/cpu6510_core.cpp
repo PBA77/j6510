@@ -6,7 +6,7 @@ namespace j6510 {
 
 Cpu6510::Cpu6510(Bus& bus) : Cpu6510(bus, Cpu6510Config{}) {}
 
-Cpu6510::Cpu6510(Bus& bus, Cpu6510Config config) : bus_(bus), config_(config) {}
+Cpu6510::Cpu6510(Bus& bus, Cpu6510Config config) : bus_(bus), direct_memory_(bus.direct_memory()), config_(config) {}
 
 Cpu6510State& Cpu6510::state() {
     return state_;
@@ -75,8 +75,10 @@ void Cpu6510::reset() {
 }
 
 StepResult Cpu6510::step() {
-    poll_target_interrupts();
-    service_pending_interrupt_if_needed();
+    if (interrupt_poll_callback_ || interrupts_.reset_pending || interrupts_.nmi_pending || interrupts_.irq_level) {
+        poll_target_interrupts();
+        service_pending_interrupt_if_needed();
+    }
 
     const uint16_t instruction_pc = state_.pc;
     const uint8_t opcode = fetch8();
@@ -387,12 +389,19 @@ uint8_t Cpu6510::read(uint16_t address) {
     if (is_port_address(address)) {
         return read_port(address);
     }
+    if (direct_memory_) {
+        return direct_memory_[address];
+    }
     return bus_.read(address);
 }
 
 void Cpu6510::write(uint16_t address, uint8_t value) {
     if (is_port_address(address)) {
         write_port(address, value);
+        return;
+    }
+    if (direct_memory_) {
+        direct_memory_[address] = value;
         return;
     }
     bus_.write(address, value);
@@ -441,8 +450,11 @@ bool Cpu6510::flag(uint8_t flag_value) const {
 }
 
 void Cpu6510::set_zn(uint8_t value) {
-    set_flag(FLAG_Z, value == 0);
-    set_flag(FLAG_N, (value & 0x80) != 0);
+    state_.p = static_cast<uint8_t>((state_.p & ~(FLAG_Z | FLAG_N)) | FLAG_U);
+    if (value == 0) {
+        state_.p |= FLAG_Z;
+    }
+    state_.p |= static_cast<uint8_t>(value & FLAG_N);
 }
 
 uint8_t Cpu6510::normalized_p(uint8_t value) const {

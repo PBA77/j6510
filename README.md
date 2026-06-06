@@ -47,7 +47,9 @@ This always runs the local unit and E2E tests.
 ## Benchmark
 
 ```sh
-./build/j6510_benchmark
+cmake -S . -B build-release -DCMAKE_BUILD_TYPE=Release
+cmake --build build-release --target j6510_benchmark
+./build-release/j6510_benchmark
 ```
 
 The benchmark runs a fixed documented-opcode loop and reports throughput as
@@ -55,7 +57,16 @@ equivalent original 6502 MHz, using nominal NMOS 6502 cycle counts for that
 instruction mix. You can pass an iteration count:
 
 ```sh
-./build/j6510_benchmark 10000000
+./build-release/j6510_benchmark 10000000
+```
+
+Current local Release baseline after the first hot-path optimization pass:
+
+```text
+iterations: 10000000
+instructions: 90000000
+nominal 6502 cycles: 270000000
+6502 equivalent: ~455 MHz
 ```
 
 ## External CPU Test Suites
