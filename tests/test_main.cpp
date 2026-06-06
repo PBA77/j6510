@@ -1125,6 +1125,52 @@ void test_run_cached_hits_and_invalidates_after_write() {
     require(cpu.block_cache_stats().invalidations > invalidations_before, "write to cached code page invalidates cache");
 }
 
+void test_run_cached_ir_mixed_loop_matches_step() {
+    RamBus step_bus;
+    RamBus cached_bus;
+    step_bus.set_reset_vector(0x1300);
+    cached_bus.set_reset_vector(0x1300);
+    const uint8_t program[] = {
+        0xA2, 0x08,       // LDX #$08
+        0xA0, 0x04,       // LDY #$04
+        0xA9, 0x10,       // LDA #$10
+        0x85, 0x20,       // STA $20
+        0xB5, 0x18,       // LDA $18,X
+        0xE8,             // INX
+        0x95, 0x18,       // STA $18,X
+        0xB9, 0x00, 0x30, // LDA $3000,Y
+        0x99, 0x10, 0x30, // STA $3010,Y
+        0x88,             // DEY
+        0xD0, 0xF6,       // BNE $130C
+        0xCA,             // DEX
+        0x8A,             // TXA
+        0xAA,             // TAX
+        0x4C, 0x00, 0x13, // JMP $1300
+    };
+    step_bus.load(0x1300, program, sizeof(program));
+    cached_bus.load(0x1300, program, sizeof(program));
+    for (uint16_t i = 0; i < 0x40; ++i) {
+        step_bus.memory[static_cast<uint16_t>(0x3000 + i)] = static_cast<uint8_t>(i + 1);
+        cached_bus.memory[static_cast<uint16_t>(0x3000 + i)] = static_cast<uint8_t>(i + 1);
+    }
+
+    Cpu6510 step_cpu(step_bus, Cpu6510Config{false});
+    Cpu6510 cached_cpu(cached_bus, Cpu6510Config{false});
+    step_cpu.reset();
+    cached_cpu.reset();
+
+    for (int i = 0; i < 90; ++i) {
+        require(step_cpu.step() == StepResult::Ok, "reference step for cached IR mixed loop executes");
+    }
+    const RunResult cached = cached_cpu.run_cached(90);
+
+    require(cached.result == StepResult::Ok, "run_cached IR mixed loop returns Ok");
+    require(cached.instructions_executed == 90, "run_cached IR mixed loop reports instruction budget");
+    require_same_state(step_cpu.state(), cached_cpu.state(), "run_cached IR mixed loop state");
+    require(step_bus.memory == cached_bus.memory, "run_cached IR mixed loop memory");
+    require(cached_cpu.block_cache_stats().hits > 0, "run_cached IR mixed loop records hits");
+}
+
 } // namespace
 
 int main() {
@@ -1159,6 +1205,7 @@ int main() {
     test_run_block_stops_on_illegal_and_interrupt_pending();
     test_run_cached_matches_step_and_tracks_cache_stats();
     test_run_cached_hits_and_invalidates_after_write();
+    test_run_cached_ir_mixed_loop_matches_step();
 
     std::cout << "All j6510 tests passed\n";
     return 0;

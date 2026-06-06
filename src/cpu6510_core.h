@@ -122,14 +122,43 @@ private:
     Port6510State port_{};
     std::function<void(uint8_t)> port_changed_callback_{};
     InterruptPollCallback interrupt_poll_callback_{};
+    enum class CachedOpKind : uint8_t {
+        Fallback,
+        LdaImm,
+        LdxImm,
+        LdyImm,
+        LdaAbs,
+        LdxAbs,
+        LdaZpX,
+        LdaAbsY,
+        StaAbs,
+        StxAbs,
+        StaZp,
+        StaZpX,
+        StaAbsY,
+        Tax,
+        Txa,
+        Inx,
+        Dex,
+        Dey,
+        Nop,
+        Bne,
+        JmpAbs,
+    };
+    struct CachedOp {
+        CachedOpKind kind = CachedOpKind::Fallback;
+        uint16_t operand = 0;
+    };
     struct CachedBlock {
         bool valid = false;
+        bool executable = false;
         uint16_t start_pc = 0;
         uint8_t count = 0;
         uint8_t page_start = 0;
         uint8_t page_end = 0;
         uint8_t lengths[32] = {};
         uint8_t opcodes[32] = {};
+        CachedOp ops[32] = {};
         RunStopReason terminator = RunStopReason::BudgetExhausted;
     };
     std::array<CachedBlock, 256> block_cache_{};
@@ -146,6 +175,9 @@ private:
     CachedBlock& block_cache_slot(uint16_t pc);
     CachedBlock decode_block(uint16_t pc);
     bool execute_cached_block(const CachedBlock& block, uint32_t remaining_budget, RunResult& result);
+    bool decode_cached_op(uint8_t opcode, uint16_t operand, CachedOp& op) const;
+    bool cached_write_is_safe_for_block(const CachedBlock& block, const CachedOp& op) const;
+    void execute_cached_op(const CachedOp& op);
     uint8_t fetch8();
     uint16_t fetch16();
     uint16_t read16(uint16_t address);
