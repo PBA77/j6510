@@ -1193,35 +1193,6 @@ void test_run_cached_ir_mixed_loop_matches_step() {
     require(cached_cpu.block_cache_stats().hits > 0, "run_cached IR mixed loop records hits");
 }
 
-void test_run_cached_accelerates_branch_loop_until_exit() {
-    RamBus step_bus;
-    RamBus cached_bus;
-    step_bus.set_reset_vector(0x1350);
-    cached_bus.set_reset_vector(0x1350);
-    const uint8_t program[] = {
-        0xA2, 0x04,       // LDX #$04
-        0xCA,             // DEX
-        0xD0, 0xFD,       // BNE $1352
-        0xA9, 0x7F,       // LDA #$7F
-        0x4C, 0x57, 0x13, // JMP $1357
-    };
-    step_bus.load(0x1350, program, sizeof(program));
-    cached_bus.load(0x1350, program, sizeof(program));
-    Cpu6510 step_cpu(step_bus, Cpu6510Config{false});
-    Cpu6510 cached_cpu(cached_bus, Cpu6510Config{false});
-    step_cpu.reset();
-    cached_cpu.reset();
-
-    run_steps(step_cpu, 12, "reference step for cached accelerated branch loop");
-    const RunResult cached = cached_cpu.run_cached(12);
-
-    require(cached.result == StepResult::Ok, "run_cached accelerated branch loop returns Ok");
-    require(cached.instructions_executed == 12, "run_cached accelerated branch loop reports budget");
-    require_same_state(step_cpu.state(), cached_cpu.state(), "run_cached accelerated branch loop state");
-    require(cached_cpu.block_cache_stats().fallback_instructions == 0, "accelerated branch loop stays in IR");
-    require(cached_cpu.block_cache_stats().hits > 0, "accelerated branch loop records repeated cache hits");
-}
-
 void test_run_cached_reports_ir_and_fallback_coverage() {
     RamBus ir_bus;
     ir_bus.set_reset_vector(0x1400);
@@ -1502,7 +1473,6 @@ int main() {
     test_run_cached_matches_step_and_tracks_cache_stats();
     test_run_cached_hits_and_invalidates_after_write();
     test_run_cached_ir_mixed_loop_matches_step();
-    test_run_cached_accelerates_branch_loop_until_exit();
     test_run_cached_reports_ir_and_fallback_coverage();
     test_run_cached_ir_flags_and_branches_match_step();
     test_run_cached_ir_load_store_transfer_matches_step();

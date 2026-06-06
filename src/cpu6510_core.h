@@ -113,7 +113,7 @@ public:
 
     void reset();
     StepResult step();
-    J6510_FAST_CODE_ATTR RunResult run(uint32_t max_instructions);
+    RunResult run(uint32_t max_instructions);
     BlockRunResult run_block(uint32_t max_instructions);
     J6510_FAST_CODE_ATTR RunResult run_cached(uint32_t max_instructions);
     const BlockCacheStats& block_cache_stats() const;
@@ -193,7 +193,6 @@ private:
         bool valid = false;
         bool executable = false;
         bool hot_executable = false;
-        bool loops_to_start = false;
         uint16_t start_pc = 0;
         uint8_t count = 0;
         uint8_t page_start = 0;
@@ -243,7 +242,7 @@ private:
     void write_port(uint16_t address, uint8_t value);
     void notify_port_if_changed(uint8_t old_output);
     bool can_use_fast_run_path() const;
-    J6510_FAST_CODE_ATTR bool run_fast_instruction(StepResult& result);
+    bool run_fast_instruction(StepResult& result);
     bool is_block_terminator(uint8_t opcode) const;
     bool has_pending_interrupt_work() const;
     uint8_t fast_fetch8();
