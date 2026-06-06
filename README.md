@@ -70,19 +70,19 @@ Current local Release baseline after the first cached-block IR pass:
 iterations: 10000000
 instructions: 90000000
 nominal 6502 cycles: 270000000
-step 6502 equivalent:   ~448 MHz
-run 6502 equivalent:    ~654 MHz
+step 6502 equivalent:   ~440 MHz
+run 6502 equivalent:    ~652 MHz
 block 6502 equivalent:  ~460 MHz
-cached 6502 equivalent: ~1527 MHz
+cached 6502 equivalent: ~1553 MHz
 cached hits/misses/invalidations: 9999999/1/0
 cached IR/fallback instructions: 90000000/0
 
-mixed step equivalent:   ~485 MHz
-mixed run equivalent:    ~713 MHz
-mixed block equivalent:  ~487 MHz
-mixed cached equivalent: ~656 MHz
+mixed step equivalent:   ~491 MHz
+mixed run equivalent:    ~722 MHz
+mixed block equivalent:  ~502 MHz
+mixed cached equivalent: ~1394 MHz
 mixed cached hits/misses/invalidations: 24999997/3/0
-mixed cached IR/fallback instructions: 75000000/75000000
+mixed cached IR/fallback instructions: 150000000/0
 ```
 
 `run_cached()` now uses a small executable cached payload for selected hot

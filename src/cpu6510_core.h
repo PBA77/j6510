@@ -146,6 +146,10 @@ private:
         Dex,
         Dey,
         Nop,
+        FlagSet,
+        FlagClear,
+        BranchSet,
+        BranchClear,
         Bne,
         JmpAbs,
     };

@@ -1194,7 +1194,7 @@ void test_run_cached_reports_ir_and_fallback_coverage() {
     fallback_bus.set_reset_vector(0x1500);
     const uint8_t fallback_program[] = {
         0xA9, 0x01,       // LDA #$01
-        0x18,             // CLC, intentionally not in cached IR yet
+        0x08,             // PHP, intentionally not in cached IR yet
         0x4C, 0x00, 0x15, // JMP $1500
     };
     fallback_bus.load(0x1500, fallback_program, sizeof(fallback_program));
@@ -1206,6 +1206,51 @@ void test_run_cached_reports_ir_and_fallback_coverage() {
     require(fallback_stats.ir_instructions == 0, "run_cached fallback program avoids IR instructions");
     require(fallback_stats.fallback_blocks > 0, "run_cached records fallback block");
     require(fallback_stats.fallback_instructions == 3, "run_cached records fallback instructions");
+}
+
+void test_run_cached_ir_flags_and_branches_match_step() {
+    RamBus step_bus;
+    RamBus cached_bus;
+    step_bus.set_reset_vector(0x1600);
+    cached_bus.set_reset_vector(0x1600);
+    const uint8_t program[] = {
+        0x38,             // SEC
+        0xB0, 0x02,       // BCS $1605
+        0xA9, 0x00,       // skipped
+        0x18,             // CLC
+        0x90, 0x02,       // BCC $160A
+        0xA9, 0x01,       // skipped
+        0x78,             // SEI
+        0x58,             // CLI
+        0xF8,             // SED
+        0xD8,             // CLD
+        0xA9, 0x00,       // LDA #$00, sets Z
+        0xF0, 0x02,       // BEQ $1614
+        0xA9, 0x02,       // skipped
+        0xA9, 0x80,       // LDA #$80, sets N
+        0x30, 0x02,       // BMI $161A
+        0xA9, 0x03,       // skipped
+        0xB8,             // CLV
+        0x50, 0x02,       // BVC $161F
+        0xA9, 0x04,       // skipped
+        0x4C, 0x00, 0x16, // JMP $1600
+    };
+    step_bus.load(0x1600, program, sizeof(program));
+    cached_bus.load(0x1600, program, sizeof(program));
+    Cpu6510 step_cpu(step_bus, Cpu6510Config{false});
+    Cpu6510 cached_cpu(cached_bus, Cpu6510Config{false});
+    step_cpu.reset();
+    cached_cpu.reset();
+
+    for (int i = 0; i < 32; ++i) {
+        require(step_cpu.step() == StepResult::Ok, "reference step for cached IR flags and branches executes");
+    }
+    const RunResult cached = cached_cpu.run_cached(32);
+
+    require(cached.result == StepResult::Ok, "run_cached IR flags and branches returns Ok");
+    require(cached.instructions_executed == 32, "run_cached IR flags and branches reports instruction budget");
+    require_same_state(step_cpu.state(), cached_cpu.state(), "run_cached IR flags and branches state");
+    require(cached_cpu.block_cache_stats().fallback_instructions == 0, "run_cached flags and branches stay in IR");
 }
 
 } // namespace
@@ -1244,6 +1289,7 @@ int main() {
     test_run_cached_hits_and_invalidates_after_write();
     test_run_cached_ir_mixed_loop_matches_step();
     test_run_cached_reports_ir_and_fallback_coverage();
+    test_run_cached_ir_flags_and_branches_match_step();
 
     std::cout << "All j6510 tests passed\n";
     return 0;

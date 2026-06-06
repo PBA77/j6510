@@ -691,8 +691,32 @@ bool Cpu6510::execute_cached_block(const CachedBlock& block, uint32_t remaining_
 
 bool Cpu6510::decode_cached_op(uint8_t opcode, uint16_t operand, CachedOp& op) const {
     switch (opcode) {
+    case 0x10:
+        op = CachedOp{CachedOpKind::BranchClear, static_cast<uint16_t>((operand << 8) | FLAG_N)};
+        return true;
+    case 0x18:
+        op = CachedOp{CachedOpKind::FlagClear, FLAG_C};
+        return true;
+    case 0x30:
+        op = CachedOp{CachedOpKind::BranchSet, static_cast<uint16_t>((operand << 8) | FLAG_N)};
+        return true;
+    case 0x38:
+        op = CachedOp{CachedOpKind::FlagSet, FLAG_C};
+        return true;
     case 0x4C:
         op = CachedOp{CachedOpKind::JmpAbs, operand};
+        return true;
+    case 0x50:
+        op = CachedOp{CachedOpKind::BranchClear, static_cast<uint16_t>((operand << 8) | FLAG_V)};
+        return true;
+    case 0x58:
+        op = CachedOp{CachedOpKind::FlagClear, FLAG_I};
+        return true;
+    case 0x70:
+        op = CachedOp{CachedOpKind::BranchSet, static_cast<uint16_t>((operand << 8) | FLAG_V)};
+        return true;
+    case 0x78:
+        op = CachedOp{CachedOpKind::FlagSet, FLAG_I};
         return true;
     case 0x8D:
         op = CachedOp{CachedOpKind::StaAbs, operand};
@@ -739,6 +763,15 @@ bool Cpu6510::decode_cached_op(uint8_t opcode, uint16_t operand, CachedOp& op) c
     case 0xB9:
         op = CachedOp{CachedOpKind::LdaAbsY, operand};
         return true;
+    case 0x90:
+        op = CachedOp{CachedOpKind::BranchClear, static_cast<uint16_t>((operand << 8) | FLAG_C)};
+        return true;
+    case 0xB0:
+        op = CachedOp{CachedOpKind::BranchSet, static_cast<uint16_t>((operand << 8) | FLAG_C)};
+        return true;
+    case 0xB8:
+        op = CachedOp{CachedOpKind::FlagClear, FLAG_V};
+        return true;
     case 0xCA:
         op = CachedOp{CachedOpKind::Dex, 0};
         return true;
@@ -748,8 +781,17 @@ bool Cpu6510::decode_cached_op(uint8_t opcode, uint16_t operand, CachedOp& op) c
     case 0xE8:
         op = CachedOp{CachedOpKind::Inx, 0};
         return true;
+    case 0xD8:
+        op = CachedOp{CachedOpKind::FlagClear, FLAG_D};
+        return true;
     case 0xEA:
         op = CachedOp{CachedOpKind::Nop, 0};
+        return true;
+    case 0xF0:
+        op = CachedOp{CachedOpKind::BranchSet, static_cast<uint16_t>((operand << 8) | FLAG_Z)};
+        return true;
+    case 0xF8:
+        op = CachedOp{CachedOpKind::FlagSet, FLAG_D};
         return true;
     default:
         op = CachedOp{CachedOpKind::Fallback, 0};
@@ -871,6 +913,26 @@ void Cpu6510::execute_cached_op(const CachedOp& op) {
         return;
     case CachedOpKind::Nop:
         state_.pc = static_cast<uint16_t>(state_.pc + 1);
+        return;
+    case CachedOpKind::FlagSet:
+        state_.p = static_cast<uint8_t>(state_.p | static_cast<uint8_t>(op.operand) | FLAG_U);
+        state_.pc = static_cast<uint16_t>(state_.pc + 1);
+        return;
+    case CachedOpKind::FlagClear:
+        state_.p = static_cast<uint8_t>((state_.p & ~static_cast<uint8_t>(op.operand)) | FLAG_U);
+        state_.pc = static_cast<uint16_t>(state_.pc + 1);
+        return;
+    case CachedOpKind::BranchSet:
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        if ((state_.p & static_cast<uint8_t>(op.operand)) != 0) {
+            state_.pc = static_cast<uint16_t>(state_.pc + static_cast<int8_t>(op.operand >> 8));
+        }
+        return;
+    case CachedOpKind::BranchClear:
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        if ((state_.p & static_cast<uint8_t>(op.operand)) == 0) {
+            state_.pc = static_cast<uint16_t>(state_.pc + static_cast<int8_t>(op.operand >> 8));
+        }
         return;
     case CachedOpKind::Bne:
         state_.pc = static_cast<uint16_t>(state_.pc + 2);
@@ -994,6 +1056,26 @@ void Cpu6510::execute_cached_block_direct(const CachedBlock& block, uint32_t to_
             break;
         case CachedOpKind::Nop:
             pc = static_cast<uint16_t>(pc + 1);
+            break;
+        case CachedOpKind::FlagSet:
+            p = static_cast<uint8_t>(p | static_cast<uint8_t>(op.operand) | FLAG_U);
+            pc = static_cast<uint16_t>(pc + 1);
+            break;
+        case CachedOpKind::FlagClear:
+            p = static_cast<uint8_t>((p & ~static_cast<uint8_t>(op.operand)) | FLAG_U);
+            pc = static_cast<uint16_t>(pc + 1);
+            break;
+        case CachedOpKind::BranchSet:
+            pc = static_cast<uint16_t>(pc + 2);
+            if ((p & static_cast<uint8_t>(op.operand)) != 0) {
+                pc = static_cast<uint16_t>(pc + static_cast<int8_t>(op.operand >> 8));
+            }
+            break;
+        case CachedOpKind::BranchClear:
+            pc = static_cast<uint16_t>(pc + 2);
+            if ((p & static_cast<uint8_t>(op.operand)) == 0) {
+                pc = static_cast<uint16_t>(pc + static_cast<int8_t>(op.operand >> 8));
+            }
             break;
         case CachedOpKind::Bne:
             pc = static_cast<uint16_t>(pc + 2);
