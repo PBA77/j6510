@@ -70,16 +70,16 @@ Current local Release baseline after the first cached-block IR pass:
 iterations: 10000000
 instructions: 90000000
 nominal 6502 cycles: 270000000
-step 6502 equivalent:   ~441 MHz
+step 6502 equivalent:   ~447 MHz
 run 6502 equivalent:    ~644 MHz
 block 6502 equivalent:  ~453 MHz
-cached 6502 equivalent: ~968 MHz
+cached 6502 equivalent: ~1540 MHz
 cached hits/misses/invalidations: 9999999/1/0
 
-mixed step equivalent:   ~485 MHz
-mixed run equivalent:    ~726 MHz
+mixed step equivalent:   ~477 MHz
+mixed run equivalent:    ~724 MHz
 mixed block equivalent:  ~499 MHz
-mixed cached equivalent: ~628 MHz
+mixed cached equivalent: ~682 MHz
 mixed cached hits/misses/invalidations: 24999997/3/0
 ```
 
@@ -88,8 +88,9 @@ documented opcodes and falls back to the reference interpreter path for the rest
 Self-modifying code remains conservative: cached blocks are invalidated by page,
 and blocks with static writes to their own code page do not use the executable
 payload. Direct 64 KB RAM buses use a faster read/write path when the 6510 port
-is disabled. The next performance step is widening this IR coverage without
-adding semantic shortcuts that diverge from `step()`.
+is disabled, and executable cached blocks use a tight direct-memory loop with
+local CPU registers. The next performance step is widening this IR coverage
+without adding semantic shortcuts that diverge from `step()`.
 
 ## External CPU Test Suites
 

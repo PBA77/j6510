@@ -180,7 +180,7 @@ private:
     bool can_use_direct_memory_path() const;
     void direct_write(uint16_t address, uint8_t value);
     void execute_cached_op(const CachedOp& op);
-    void execute_cached_op_direct(const CachedOp& op);
+    void execute_cached_block_direct(const CachedBlock& block, uint32_t to_execute, RunResult& result);
     uint8_t fetch8();
     uint16_t fetch16();
     uint16_t read16(uint16_t address);
