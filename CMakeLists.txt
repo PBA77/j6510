@@ -7,6 +7,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(J6510_ENABLE_BLOCK_CACHE "Enable cached-block execution support" ON)
+option(J6510_ENABLE_CACHE_STATS "Enable cached-block execution statistics" ON)
+set(J6510_BLOCK_CACHE_SLOTS "256" CACHE STRING "Number of cached-block slots")
+set(J6510_CACHED_BLOCK_MAX_OPS "32" CACHE STRING "Maximum cached operations per decoded block")
 
 add_library(j6510_core
     src/cpu6510_bus.cpp
@@ -27,6 +30,9 @@ target_compile_options(j6510_core
 target_compile_definitions(j6510_core
     PUBLIC
         J6510_ENABLE_BLOCK_CACHE=$<BOOL:${J6510_ENABLE_BLOCK_CACHE}>
+        J6510_ENABLE_CACHE_STATS=$<BOOL:${J6510_ENABLE_CACHE_STATS}>
+        J6510_BLOCK_CACHE_SLOTS=${J6510_BLOCK_CACHE_SLOTS}
+        J6510_CACHED_BLOCK_MAX_OPS=${J6510_CACHED_BLOCK_MAX_OPS}
 )
 
 enable_testing()

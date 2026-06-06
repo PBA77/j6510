@@ -1234,7 +1234,9 @@ void test_run_cached_matches_step_and_tracks_cache_stats() {
     require(cached.result == StepResult::Ok, "run_cached returns Ok before sentinel");
     require(cached.instructions_executed == 5, "run_cached reports instruction budget");
     require_same_state(step_cpu.state(), cached_cpu.state(), "run_cached vs step");
+#if J6510_ENABLE_CACHE_STATS
     require(cached_cpu.block_cache_stats().misses > 0, "run_cached records cache miss");
+#endif
 
     const RunResult illegal = cached_cpu.run_cached(1);
     require(illegal.result == StepResult::IllegalOpcode, "run_cached reports illegal sentinel");
@@ -1255,13 +1257,17 @@ void test_run_cached_hits_and_invalidates_after_write() {
 
     RunResult first = cpu.run_cached(3);
     require(first.result == StepResult::Ok, "first run_cached loop executes");
+#if J6510_ENABLE_CACHE_STATS
     require(cpu.block_cache_stats().misses >= 1, "first run_cached records miss");
+#endif
 
     RunResult second = cpu.run_cached(3);
     require(second.result == StepResult::Ok, "second run_cached loop executes");
+#if J6510_ENABLE_CACHE_STATS
     require(cpu.block_cache_stats().hits >= 1, "second run_cached records hit");
 
     const uint64_t invalidations_before = cpu.block_cache_stats().invalidations;
+#endif
     const uint8_t writer[] = {
         0xA9, 0x42,       // LDA #$42
         0x8D, 0x01, 0x11, // STA $1101
@@ -1271,7 +1277,55 @@ void test_run_cached_hits_and_invalidates_after_write() {
     cpu.reset();
     require(cpu.run_cached(2).result == StepResult::Ok, "run_cached writer executes");
     require(bus.memory[0x1101] == 0x42, "writer updates cached code page");
+#if J6510_ENABLE_CACHE_STATS
     require(cpu.block_cache_stats().invalidations > invalidations_before, "write to cached code page invalidates cache");
+#endif
+}
+
+void test_run_cached_direct_path_with_6510_port_matches_step() {
+    RamBus step_bus;
+    RamBus cached_bus;
+    step_bus.set_reset_vector(0x1B00);
+    cached_bus.set_reset_vector(0x1B00);
+    const uint8_t program[] = {
+        0xA2, 0x01,       // LDX #$01
+        0xB5, 0xFF,       // LDA $FF,X -> 6510 DDR at $0000
+        0x85, 0x10,       // STA $10
+        0xB5, 0x00,       // LDA $00,X -> 6510 data port at $0001
+        0x85, 0x11,       // STA $11
+        0xA9, 0x00,       // LDA #$00
+        0x95, 0xFF,       // STA $FF,X -> 6510 DDR at $0000
+        0xA9, 0x55,       // LDA #$55
+        0x95, 0x00,       // STA $00,X -> 6510 data port at $0001
+        0xB5, 0x00,       // LDA $00,X -> data port with DDR cleared
+        0x85, 0x12,       // STA $12
+        0x4C, 0x00, 0x1B, // JMP $1B00
+    };
+    step_bus.load(0x1B00, program, sizeof(program));
+    cached_bus.load(0x1B00, program, sizeof(program));
+
+    Cpu6510 step_cpu(step_bus);
+    Cpu6510 cached_cpu(cached_bus);
+    step_cpu.reset();
+    cached_cpu.reset();
+
+    for (int i = 0; i < 12; ++i) {
+        require(step_cpu.step() == StepResult::Ok, "reference step for cached direct 6510 port executes");
+    }
+    const RunResult cached = cached_cpu.run_cached(12);
+
+    require(cached.result == StepResult::Ok, "run_cached direct 6510 port returns Ok");
+    require(cached.instructions_executed == 12, "run_cached direct 6510 port reports instruction budget");
+    require_same_state(step_cpu.state(), cached_cpu.state(), "run_cached direct 6510 port state");
+    require(step_bus.memory == cached_bus.memory, "run_cached direct 6510 port memory");
+    require(step_cpu.port().ddr == cached_cpu.port().ddr, "run_cached direct 6510 port DDR");
+    require(step_cpu.port().data == cached_cpu.port().data, "run_cached direct 6510 port data");
+    require(cached_bus.memory[0x0010] == 0x2F, "run_cached direct 6510 port stores DDR read");
+    require(cached_bus.memory[0x0011] == 0xF7, "run_cached direct 6510 port stores data-port read");
+    require(cached_bus.memory[0x0012] == 0xFF, "run_cached direct 6510 port stores data-port read after DDR clear");
+#if J6510_ENABLE_CACHE_STATS
+    require(cached_cpu.block_cache_stats().fallback_instructions == 0, "run_cached direct 6510 port stays in IR");
+#endif
 }
 
 void test_run_cached_ir_mixed_loop_matches_step() {
@@ -1317,10 +1371,13 @@ void test_run_cached_ir_mixed_loop_matches_step() {
     require(cached.instructions_executed == 90, "run_cached IR mixed loop reports instruction budget");
     require_same_state(step_cpu.state(), cached_cpu.state(), "run_cached IR mixed loop state");
     require(step_bus.memory == cached_bus.memory, "run_cached IR mixed loop memory");
+#if J6510_ENABLE_CACHE_STATS
     require(cached_cpu.block_cache_stats().hits > 0, "run_cached IR mixed loop records hits");
+#endif
 }
 
 void test_run_cached_reports_ir_and_fallback_coverage() {
+#if J6510_ENABLE_CACHE_STATS
     RamBus ir_bus;
     ir_bus.set_reset_vector(0x1400);
     const uint8_t ir_program[] = {
@@ -1357,6 +1414,7 @@ void test_run_cached_reports_ir_and_fallback_coverage() {
     require(fallback_stats.fallback_instructions == 3, "run_cached records fallback instructions");
     require(fallback_stats.fallback_opcodes[0x08] == 1, "run_cached records fallback opcode histogram");
     require(fallback_stats.unsupported_fallback_opcodes[0x08] == 1, "run_cached records unsupported fallback opcode histogram");
+#endif
 }
 
 void test_run_cached_ir_flags_and_branches_match_step() {
@@ -1401,7 +1459,9 @@ void test_run_cached_ir_flags_and_branches_match_step() {
     require(cached.result == StepResult::Ok, "run_cached IR flags and branches returns Ok");
     require(cached.instructions_executed == 32, "run_cached IR flags and branches reports instruction budget");
     require_same_state(step_cpu.state(), cached_cpu.state(), "run_cached IR flags and branches state");
+#if J6510_ENABLE_CACHE_STATS
     require(cached_cpu.block_cache_stats().fallback_instructions == 0, "run_cached flags and branches stay in IR");
+#endif
 }
 
 void test_run_cached_ir_load_store_transfer_matches_step() {
@@ -1443,7 +1503,9 @@ void test_run_cached_ir_load_store_transfer_matches_step() {
     require(cached.instructions_executed == 16, "run_cached IR load/store/transfer reports instruction budget");
     require_same_state(step_cpu.state(), cached_cpu.state(), "run_cached IR load/store/transfer state");
     require(step_bus.memory == cached_bus.memory, "run_cached IR load/store/transfer memory");
+#if J6510_ENABLE_CACHE_STATS
     require(cached_cpu.block_cache_stats().fallback_instructions == 0, "run_cached load/store/transfer stays in IR");
+#endif
 }
 
 void test_run_cached_ir_indexed_loads_match_step() {
@@ -1484,8 +1546,10 @@ void test_run_cached_ir_indexed_loads_match_step() {
     require(cached.result == StepResult::Ok, "run_cached IR indexed loads returns Ok");
     require(cached.instructions_executed == 9, "run_cached IR indexed loads reports instruction budget");
     require_same_state(step_cpu.state(), cached_cpu.state(), "run_cached IR indexed loads state");
+#if J6510_ENABLE_CACHE_STATS
     require(cached_cpu.block_cache_stats().fallback_instructions == 0, "run_cached indexed loads stay in IR");
     require(cached_cpu.block_cache_stats().ir_instructions == 9, "run_cached indexed loads count as IR");
+#endif
 }
 
 void test_run_cached_ir_adc_cmp_inc_match_step() {
@@ -1530,12 +1594,16 @@ void test_run_cached_ir_adc_cmp_inc_match_step() {
     require(cached.instructions_executed == 13, "run_cached IR ADC/CMP/INC reports instruction budget");
     require_same_state(step_cpu.state(), cached_cpu.state(), "run_cached IR ADC/CMP/INC state");
     require(step_bus.memory == cached_bus.memory, "run_cached IR ADC/CMP/INC memory");
+#if J6510_ENABLE_CACHE_STATS
     require(cached_cpu.block_cache_stats().fallback_instructions == 0, "run_cached ADC/CMP/INC stays in IR");
+#endif
     require(generic.result == StepResult::Ok, "generic cached IR ADC/CMP/INC returns Ok");
     require(generic.instructions_executed == 13, "generic cached IR ADC/CMP/INC reports instruction budget");
     require_same_state(step_cpu.state(), generic_cpu.state(), "generic cached IR ADC/CMP/INC state");
     require(step_bus.memory == generic_bus.memory, "generic cached IR ADC/CMP/INC memory");
+#if J6510_ENABLE_CACHE_STATS
     require(generic_cpu.block_cache_stats().fallback_instructions == 0, "generic cached ADC/CMP/INC stays in IR");
+#endif
 }
 
 void test_run_cached_realish_stress_matches_step() {
@@ -1560,8 +1628,10 @@ void test_run_cached_realish_stress_matches_step() {
     require(cached.instructions_executed == total_instructions, "run_cached realish stress reports instruction budget");
     require_same_state(step_cpu.state(), cached_cpu.state(), "run_cached realish stress state");
     require(step_bus.memory == cached_bus.memory, "run_cached realish stress memory");
+#if J6510_ENABLE_CACHE_STATS
     require(cached_cpu.block_cache_stats().fallback_instructions == 0, "run_cached realish stress stays in IR");
     require(cached_cpu.block_cache_stats().hits > 0, "run_cached realish stress records cache hits");
+#endif
 }
 
 void test_undocumented_run_paths_match_step() {
@@ -1606,7 +1676,9 @@ void test_undocumented_run_paths_match_step() {
     require_same_state(step_cpu.state(), cached_cpu.state(), "run_cached undocumented vs step");
     require(step_bus.memory == run_bus.memory, "run undocumented memory");
     require(step_bus.memory == cached_bus.memory, "run_cached undocumented memory");
+#if J6510_ENABLE_CACHE_STATS
     require(cached_cpu.block_cache_stats().fallback_instructions == 9, "run_cached undocumented falls back to interpreter");
+#endif
 
     require(step_cpu.step() == StepResult::IllegalOpcode, "reference step reaches undocumented profile sentinel");
     require(run_cpu.run(1).result == StepResult::IllegalOpcode, "run reaches undocumented profile sentinel");
@@ -1910,6 +1982,7 @@ int main() {
 #if J6510_ENABLE_BLOCK_CACHE
     test_run_cached_matches_step_and_tracks_cache_stats();
     test_run_cached_hits_and_invalidates_after_write();
+    test_run_cached_direct_path_with_6510_port_matches_step();
     test_run_cached_ir_mixed_loop_matches_step();
     test_run_cached_reports_ir_and_fallback_coverage();
     test_run_cached_ir_flags_and_branches_match_step();

@@ -82,6 +82,16 @@ cmake --build build-embedded
 
 That keeps `run_cached()` available as an API, but it falls back to `run()`.
 
+The cached-block executor also exposes compile-time tuning knobs:
+
+- `J6510_ENABLE_CACHE_STATS` controls cache hit/miss/fallback counters. It is
+  enabled by default for desktop diagnostics and can be disabled for embedded
+  fast builds.
+- `J6510_BLOCK_CACHE_SLOTS` controls the number of cached block slots. The
+  default is `256`.
+- `J6510_CACHED_BLOCK_MAX_OPS` controls the maximum decoded operations per
+  cached block. The default is `32`.
+
 ## Embedded Benchmarks
 
 The core includes an Arduino-compatible embedded benchmark sketch at
@@ -98,6 +108,7 @@ pio run -e teensy40-benchmark
 pio run -e rp2040-pico-benchmark
 pio run -e esp32s2-saola-benchmark
 pio run -e esp32s2-saola-fast
+pio run -e esp32s3-fast
 pio run -e teensy40-benchmark -t upload
 pio device monitor -b 115200
 ```
@@ -105,8 +116,11 @@ pio device monitor -b 115200
 If PlatformIO Core is installed but `pio` is not on `PATH`, use
 `~/.platformio/penv/bin/pio` or add `~/.platformio/penv/bin` to your shell path.
 
-The `esp32s2-saola-fast` environment builds the same sketch with `-O3` and marks
-the cached executor for IRAM placement through `J6510_FAST_CODE_ATTR=IRAM_ATTR`.
+The ESP32 fast environments build the same sketch with `-O3`, a 240 MHz CPU
+frequency setting, cache statistics disabled, and cached executor hot paths
+marked for IRAM placement through `J6510_FAST_CODE_ATTR=IRAM_ATTR`. They also
+prefer internal heap for the emulator state instead of placing the 64 KB CPU RAM
+in PSRAM when PSRAM is present.
 
 This is not a full C64 target. It does not include VIC-II, SID, CIA, keyboard,
 video, storage, or real host interrupt wiring.
@@ -141,47 +155,55 @@ reference instruction path. You can pass an iteration count:
 ./build-release/j6510_benchmark both 10000000
 ./build-release/j6510_benchmark mixed 5000000
 ./build-release/j6510_benchmark realish 100000
+./build-release/j6510_benchmark profile 100000
 ```
 
-Current local Release baseline after the first cached-block IR pass, measured
-on an Apple M1 Max with `./scripts/run_release_benchmarks.sh`:
+Current local Release sample after the ESP32-oriented fast-path pass, measured
+on an Apple M1 Max:
 
-```text
-both iterations: 20000000
-instructions: 180000000
-nominal 6502 cycles: 540000000
-step 6502 equivalent:   ~438 MHz
-run 6502 equivalent:    ~647 MHz
-block 6502 equivalent:  ~446 MHz
-cached 6502 equivalent: ~1390 MHz
-cached hits/misses/invalidations: 19999999/1/0
-cached IR/fallback instructions: 180000000/0
+| Suite | Iterations | Instructions | Nominal 6502 cycles | `step` | `run` | `run_block` | `run_cached` |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `both` | 5,000,000 | 45,000,000 | 135,000,000 | 438 MHz | 637 MHz | 451 MHz | 1,364 MHz |
+| `mixed` | 2,000,000 | 60,000,000 | 202,000,000 | 497 MHz | 714 MHz | 492 MHz | 1,405 MHz |
+| `realish` | 50,000 | 14,600,000 | 43,650,000 | 346 MHz | 418 MHz | 322 MHz | 928 MHz |
 
-mixed iterations: 10000000
-mixed step equivalent:   ~502 MHz
-mixed run equivalent:    ~727 MHz
-mixed block equivalent:  ~499 MHz
-mixed cached equivalent: ~1165 MHz
-mixed cached hits/misses/invalidations: 49999997/3/0
-mixed cached IR/fallback instructions: 300000000/0
+Cached-block coverage for that sample:
 
-realish iterations: 200000
-realish step equivalent:   ~417 MHz
-realish run equivalent:    ~433 MHz
-realish block equivalent:  ~329 MHz
-realish cached equivalent: ~946 MHz
-realish cached hits/misses/invalidations: 12999996/4/0
-realish cached IR/fallback instructions: 58400000/0
-```
+| Suite | Cache hits/misses/invalidations | IR/fallback instructions |
+| --- | ---: | ---: |
+| `both` | 4,999,999 / 1 / 0 | 45,000,000 / 0 |
+| `mixed` | 9,999,997 / 3 / 0 | 60,000,000 / 0 |
+| `realish` | 3,249,996 / 4 / 0 | 14,600,000 / 0 |
+
+ESP32-S2 USB benchmark on an `esp32-s2-saola-1` connected as
+`/dev/cu.usbserial-210`:
+
+| Suite | Mode | Baseline build | Fast build | Improvement |
+| --- | --- | ---: | ---: | ---: |
+| `basic` | `run` | 3.25 MHz | 4.89 MHz | +50% |
+| `basic` | `run_cached` | 6.17 MHz | 9.29 MHz | +51% |
+| `mixed` | `run` | 3.18 MHz | 4.71 MHz | +48% |
+| `mixed` | `run_cached` | 4.92 MHz | 7.35 MHz | +49% |
+| `realish` | `run` | 2.38 MHz | 3.28 MHz | +38% |
+| `realish` | `run_cached` | 4.29 MHz | 6.20 MHz | +45% |
+
+The baseline build used cache statistics and allocated the 64 KB `RamBus` in
+PSRAM on that board. The fast build disabled cache statistics, marked the hot
+cached executor for IRAM, and allocated both CPU and bus state from internal
+heap.
 
 `run_cached()` now uses a small executable cached payload for selected hot
 documented opcodes and falls back to the reference interpreter path for the rest.
 Self-modifying code remains conservative: cached blocks are invalidated by page,
 and blocks with static writes to their own code page do not use the executable
-payload. Direct 64 KB RAM buses use a faster read/write path when the 6510 port
-is disabled, and executable cached blocks use a tight direct-memory loop with
-local CPU registers. The `realish` diagnostic now stays fully in IR after adding
-the previously dominant `ADC #`, `CMP #`, and `INC zp` cached operations.
+payload. Direct 64 KB RAM buses use a faster read/write path, including the
+default 6510 profile; accesses to `$0000/$0001` keep the normal 6510 port
+semantics while other addresses use the direct RAM pointer. Executable cached
+blocks use a tight direct-memory loop with local CPU registers. The `realish`
+diagnostic now stays fully in IR after adding the previously dominant `ADC #`,
+`CMP #`, and `INC zp` cached operations. The `profile` benchmark mode runs the
+`realish` cached workload and prints the cache histogram when
+`J6510_ENABLE_CACHE_STATS` is enabled.
 
 Current decision: the easy cached-IR wins are mostly consumed. Further widening
 should wait for a real workload histogram or for a deliberate larger design such

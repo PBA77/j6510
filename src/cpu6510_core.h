@@ -11,6 +11,18 @@
 #define J6510_ENABLE_BLOCK_CACHE 1
 #endif
 
+#ifndef J6510_ENABLE_CACHE_STATS
+#define J6510_ENABLE_CACHE_STATS 1
+#endif
+
+#ifndef J6510_BLOCK_CACHE_SLOTS
+#define J6510_BLOCK_CACHE_SLOTS 256
+#endif
+
+#ifndef J6510_CACHED_BLOCK_MAX_OPS
+#define J6510_CACHED_BLOCK_MAX_OPS 32
+#endif
+
 #ifndef J6510_FAST_CODE_ATTR
 #define J6510_FAST_CODE_ATTR
 #endif
@@ -166,6 +178,11 @@ private:
     std::function<void(uint8_t)> port_changed_callback_{};
     InterruptPollCallback interrupt_poll_callback_{};
 #if J6510_ENABLE_BLOCK_CACHE
+    static_assert(J6510_BLOCK_CACHE_SLOTS > 0, "J6510_BLOCK_CACHE_SLOTS must be positive");
+    static_assert(J6510_BLOCK_CACHE_SLOTS <= 65536, "J6510_BLOCK_CACHE_SLOTS must fit the 16-bit address space");
+    static_assert(J6510_CACHED_BLOCK_MAX_OPS > 0, "J6510_CACHED_BLOCK_MAX_OPS must be positive");
+    static_assert(J6510_CACHED_BLOCK_MAX_OPS <= 255, "J6510_CACHED_BLOCK_MAX_OPS must fit CachedBlock::count");
+
     enum class CachedOpKind : uint8_t {
         Fallback,
         LdaImm,
@@ -226,15 +243,17 @@ private:
         uint8_t count = 0;
         uint8_t page_start = 0;
         uint8_t page_end = 0;
-        uint8_t lengths[32] = {};
-        uint8_t opcodes[32] = {};
-        CachedOp ops[32] = {};
+        uint8_t lengths[J6510_CACHED_BLOCK_MAX_OPS] = {};
+        uint8_t opcodes[J6510_CACHED_BLOCK_MAX_OPS] = {};
+        CachedOp ops[J6510_CACHED_BLOCK_MAX_OPS] = {};
         RunStopReason terminator = RunStopReason::BudgetExhausted;
     };
-    std::array<CachedBlock, 256> block_cache_{};
+    std::array<CachedBlock, J6510_BLOCK_CACHE_SLOTS> block_cache_{};
     std::array<uint16_t, 256> cached_page_use_count_{};
     uint16_t valid_cached_blocks_ = 0;
+#if J6510_ENABLE_CACHE_STATS
     BlockCacheStats block_cache_stats_{};
+#endif
 #endif
 
     uint8_t read(uint16_t address);

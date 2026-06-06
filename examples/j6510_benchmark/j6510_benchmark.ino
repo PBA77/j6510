@@ -188,15 +188,23 @@ void initialize_emulator() {
     bool bus_in_psram = false;
     bool cpu_in_psram = false;
 
+#if defined(J6510_ESP32_PREFER_INTERNAL_RAM) && J6510_ESP32_PREFER_INTERNAL_RAM
+    bus_memory = std::malloc(sizeof(RamBus));
+#else
     if (psramFound()) {
         bus_memory = ps_malloc(sizeof(RamBus));
         bus_in_psram = bus_memory != nullptr;
     }
+#endif
 
     cpu_memory = std::malloc(sizeof(Cpu6510));
 
     if (bus_memory == nullptr) {
         bus_memory = std::malloc(sizeof(RamBus));
+    }
+    if (bus_memory == nullptr && psramFound()) {
+        bus_memory = ps_malloc(sizeof(RamBus));
+        bus_in_psram = bus_memory != nullptr;
     }
     if (cpu_memory == nullptr && psramFound()) {
         cpu_memory = ps_malloc(sizeof(Cpu6510));
@@ -240,12 +248,20 @@ void run_benchmarks() {
 #if defined(ARDUINO_ARCH_RP2040)
     Serial.println("j6510 RP2040 Pico benchmark");
 #elif defined(ARDUINO_ARCH_ESP32)
-    Serial.println("j6510 ESP32-S2 benchmark");
+    Serial.println("j6510 ESP32 benchmark");
 #else
     Serial.println("j6510 Teensy 4.0 benchmark");
 #endif
     Serial.print("J6510_ENABLE_BLOCK_CACHE=");
     Serial.println(J6510_ENABLE_BLOCK_CACHE);
+#if J6510_ENABLE_BLOCK_CACHE
+    Serial.print("J6510_ENABLE_CACHE_STATS=");
+    Serial.println(J6510_ENABLE_CACHE_STATS);
+    Serial.print("J6510_BLOCK_CACHE_SLOTS=");
+    Serial.println(J6510_BLOCK_CACHE_SLOTS);
+    Serial.print("J6510_CACHED_BLOCK_MAX_OPS=");
+    Serial.println(J6510_CACHED_BLOCK_MAX_OPS);
+#endif
 #if defined(ARDUINO_ARCH_ESP32)
     Serial.print("heap free=");
     Serial.print(ESP.getFreeHeap());

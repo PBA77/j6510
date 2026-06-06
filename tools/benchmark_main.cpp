@@ -16,7 +16,7 @@ namespace {
 
 uint64_t parse_iterations(int argc, char** argv, const std::string& mode) {
     if (argc < 3) {
-        if (mode == "realish") {
+        if (mode == "realish" || mode == "profile") {
             return 100000;
         }
         return 5000000;
@@ -25,7 +25,7 @@ uint64_t parse_iterations(int argc, char** argv, const std::string& mode) {
     char* end = nullptr;
     const unsigned long long value = std::strtoull(argv[2], &end, 10);
     if (end == argv[2] || *end != '\0' || value == 0) {
-        std::cerr << "usage: j6510_benchmark [step|run|block|cached|both|mixed|realish] [positive_iterations]\n";
+        std::cerr << "usage: j6510_benchmark [step|run|block|cached|both|mixed|realish|profile] [positive_iterations]\n";
         std::exit(2);
     }
     return static_cast<uint64_t>(value);
@@ -38,8 +38,8 @@ std::string parse_mode(int argc, char** argv) {
 
     std::string mode = argv[1];
     if (mode != "step" && mode != "run" && mode != "block" && mode != "cached" && mode != "both" &&
-        mode != "mixed" && mode != "realish") {
-        std::cerr << "usage: j6510_benchmark [step|run|block|cached|both|mixed|realish] [positive_iterations]\n";
+        mode != "mixed" && mode != "realish" && mode != "profile") {
+        std::cerr << "usage: j6510_benchmark [step|run|block|cached|both|mixed|realish|profile] [positive_iterations]\n";
         std::exit(2);
     }
     return mode;
@@ -356,7 +356,9 @@ int main(int argc, char** argv) {
     const uint64_t total_cycles = iterations * cycles_per_iteration;
 
     std::cout << "iterations: " << iterations << '\n';
-    if (mode == "mixed") {
+    if (mode == "profile") {
+        run_realish_benchmark(iterations, "cached");
+    } else if (mode == "mixed") {
         run_mixed_benchmark(iterations, "step");
         run_mixed_benchmark(iterations, "run");
         run_mixed_benchmark(iterations, "block");

@@ -8,6 +8,17 @@ namespace {
 
 #if J6510_ENABLE_BLOCK_CACHE
 
+#if J6510_ENABLE_CACHE_STATS
+#define J6510_CACHE_STATS(statement)                                                                                   \
+    do {                                                                                                               \
+        statement;                                                                                                     \
+    } while (false)
+#else
+#define J6510_CACHE_STATS(statement)                                                                                   \
+    do {                                                                                                               \
+    } while (false)
+#endif
+
 uint16_t make_branch_operand(uint16_t operand, uint8_t flag) {
     return static_cast<uint16_t>((operand << 8) | flag);
 }
@@ -67,6 +78,12 @@ uint8_t compare_flags(uint8_t p, uint8_t lhs, uint8_t rhs) {
     return with_zn(p, result);
 }
 
+#endif
+
+#ifndef J6510_CACHE_STATS
+#define J6510_CACHE_STATS(statement)                                                                                   \
+    do {                                                                                                               \
+    } while (false)
 #endif
 
 } // namespace
@@ -566,9 +583,9 @@ J6510_FAST_CODE_ATTR RunResult Cpu6510::run_cached(uint32_t max_instructions) {
             slot = decode_block(state_.pc);
             add_block_to_page_counts(slot);
             ++valid_cached_blocks_;
-            ++block_cache_stats_.misses;
+            J6510_CACHE_STATS(++block_cache_stats_.misses);
         } else {
-            ++block_cache_stats_.hits;
+            J6510_CACHE_STATS(++block_cache_stats_.hits);
         }
 
         if (!execute_cached_block(slot, max_instructions - result.instructions_executed, result)) {
@@ -583,7 +600,7 @@ J6510_FAST_CODE_ATTR RunResult Cpu6510::run_cached(uint32_t max_instructions) {
 }
 
 const BlockCacheStats& Cpu6510::block_cache_stats() const {
-#if J6510_ENABLE_BLOCK_CACHE
+#if J6510_ENABLE_BLOCK_CACHE && J6510_ENABLE_CACHE_STATS
     return block_cache_stats_;
 #else
     static const BlockCacheStats empty_stats{};
@@ -725,7 +742,7 @@ void Cpu6510::invalidate_block_cache_for_write(uint16_t address) {
         }
     }
     if (invalidated) {
-        ++block_cache_stats_.invalidations;
+        J6510_CACHE_STATS(++block_cache_stats_.invalidations);
     }
 }
 
@@ -767,7 +784,7 @@ bool Cpu6510::block_uses_page(const CachedBlock& block, uint8_t page) const {
 }
 
 Cpu6510::CachedBlock& Cpu6510::block_cache_slot(uint16_t pc) {
-    return block_cache_[pc & 0x00FF];
+    return block_cache_[pc % J6510_BLOCK_CACHE_SLOTS];
 }
 
 Cpu6510::CachedBlock Cpu6510::decode_block(uint16_t pc) {
@@ -793,7 +810,7 @@ Cpu6510::CachedBlock Cpu6510::decode_block(uint16_t pc) {
     };
 
     uint16_t cursor = pc;
-    while (block.count < 32) {
+    while (block.count < J6510_CACHED_BLOCK_MAX_OPS) {
         const uint8_t opcode = read(cursor);
         const OpcodeInfo& info = active_opcode_info(opcode);
         uint16_t operand = 0;
@@ -845,8 +862,8 @@ Cpu6510::CachedBlock Cpu6510::decode_block(uint16_t pc) {
 J6510_FAST_CODE_ATTR bool Cpu6510::execute_cached_block(const CachedBlock& block, uint32_t remaining_budget, RunResult& result) {
     const uint32_t to_execute = block.count < remaining_budget ? block.count : remaining_budget;
     if (block.executable && can_use_fast_run_path()) {
-        ++block_cache_stats_.ir_blocks;
-        block_cache_stats_.ir_instructions += to_execute;
+        J6510_CACHE_STATS(++block_cache_stats_.ir_blocks);
+        J6510_CACHE_STATS(block_cache_stats_.ir_instructions += to_execute);
         if (can_use_direct_memory_path()) {
             if (block.hot_executable) {
                 execute_cached_block_direct_hot(block, to_execute, result);
@@ -863,14 +880,16 @@ J6510_FAST_CODE_ATTR bool Cpu6510::execute_cached_block(const CachedBlock& block
         return true;
     }
 
-    ++block_cache_stats_.fallback_blocks;
-    block_cache_stats_.fallback_instructions += to_execute;
+    J6510_CACHE_STATS(++block_cache_stats_.fallback_blocks);
+    J6510_CACHE_STATS(block_cache_stats_.fallback_instructions += to_execute);
+#if J6510_ENABLE_CACHE_STATS
     for (uint32_t i = 0; i < to_execute; ++i) {
         ++block_cache_stats_.fallback_opcodes[block.opcodes[i]];
         if (block.ops[i].kind == CachedOpKind::Fallback) {
             ++block_cache_stats_.unsupported_fallback_opcodes[block.opcodes[i]];
         }
     }
+#endif
     for (uint32_t i = 0; i < to_execute; ++i) {
         StepResult step_result = StepResult::Ok;
         const uint16_t pc_before = state_.pc;
@@ -1126,7 +1145,7 @@ bool Cpu6510::cached_write_is_safe_for_block(const CachedBlock& block, const Cac
 }
 
 bool Cpu6510::can_use_direct_memory_path() const {
-    return direct_memory_ && !config_.port_enabled;
+    return direct_memory_ != nullptr;
 }
 
 #endif
@@ -1363,6 +1382,7 @@ J6510_FAST_CODE_ATTR void Cpu6510::execute_cached_block_direct_hot(const CachedB
                                                                     uint32_t to_execute,
                                                                     RunResult& result) {
     uint8_t* memory = direct_memory_;
+    const bool port_enabled = config_.port_enabled;
     uint8_t a = state_.a;
     uint8_t x = state_.x;
     uint8_t y = state_.y;
@@ -1376,7 +1396,17 @@ J6510_FAST_CODE_ATTR void Cpu6510::execute_cached_block_direct_hot(const CachedB
         }
         p |= static_cast<uint8_t>(value & FLAG_N);
     };
-    const auto write_direct = [this, memory](uint16_t address, uint8_t value) {
+    const auto read_direct = [this, memory, port_enabled](uint16_t address) -> uint8_t {
+        if (J6510_UNLIKELY(port_enabled && (address == 0x0000 || address == 0x0001))) {
+            return read_port(address);
+        }
+        return memory[address];
+    };
+    const auto write_direct = [this, memory, port_enabled](uint16_t address, uint8_t value) {
+        if (J6510_UNLIKELY(port_enabled && (address == 0x0000 || address == 0x0001))) {
+            write_port(address, value);
+            return;
+        }
         memory[address] = value;
         const uint8_t page = static_cast<uint8_t>(address >> 8);
         if (valid_cached_blocks_ != 0 && cached_page_use_count_[page] != 0) {
@@ -1403,22 +1433,22 @@ J6510_FAST_CODE_ATTR void Cpu6510::execute_cached_block_direct_hot(const CachedB
             set_zn_local(y);
             break;
         case CachedOpKind::LdaAbs:
-            a = memory[op.operand];
+            a = read_direct(op.operand);
             pc = static_cast<uint16_t>(pc + 3);
             set_zn_local(a);
             break;
         case CachedOpKind::LdxAbs:
-            x = memory[op.operand];
+            x = read_direct(op.operand);
             pc = static_cast<uint16_t>(pc + 3);
             set_zn_local(x);
             break;
         case CachedOpKind::LdaZpX:
-            a = memory[static_cast<uint8_t>(op.operand + x)];
+            a = read_direct(static_cast<uint8_t>(op.operand + x));
             pc = static_cast<uint16_t>(pc + 2);
             set_zn_local(a);
             break;
         case CachedOpKind::LdaAbsY:
-            a = memory[static_cast<uint16_t>(op.operand + y)];
+            a = read_direct(static_cast<uint16_t>(op.operand + y));
             pc = static_cast<uint16_t>(pc + 3);
             set_zn_local(a);
             break;
@@ -1503,7 +1533,7 @@ J6510_FAST_CODE_ATTR void Cpu6510::execute_cached_block_direct_hot(const CachedB
             break;
         case CachedOpKind::IncZp: {
             const uint16_t address = static_cast<uint8_t>(op.operand);
-            const uint8_t value = static_cast<uint8_t>(memory[address] + 1);
+            const uint8_t value = static_cast<uint8_t>(read_direct(address) + 1);
             write_direct(address, value);
             pc = static_cast<uint16_t>(pc + 2);
             set_zn_local(value);
@@ -1527,6 +1557,7 @@ J6510_FAST_CODE_ATTR void Cpu6510::execute_cached_block_direct(const CachedBlock
                                                                 uint32_t to_execute,
                                                                 RunResult& result) {
     uint8_t* memory = direct_memory_;
+    const bool port_enabled = config_.port_enabled;
     uint8_t a = state_.a;
     uint8_t x = state_.x;
     uint8_t y = state_.y;
@@ -1540,7 +1571,17 @@ J6510_FAST_CODE_ATTR void Cpu6510::execute_cached_block_direct(const CachedBlock
         }
         p |= static_cast<uint8_t>(value & FLAG_N);
     };
-    const auto write_direct = [this, memory](uint16_t address, uint8_t value) {
+    const auto read_direct = [this, memory, port_enabled](uint16_t address) -> uint8_t {
+        if (J6510_UNLIKELY(port_enabled && (address == 0x0000 || address == 0x0001))) {
+            return read_port(address);
+        }
+        return memory[address];
+    };
+    const auto write_direct = [this, memory, port_enabled](uint16_t address, uint8_t value) {
+        if (J6510_UNLIKELY(port_enabled && (address == 0x0000 || address == 0x0001))) {
+            write_port(address, value);
+            return;
+        }
         memory[address] = value;
         const uint8_t page = static_cast<uint8_t>(address >> 8);
         if (valid_cached_blocks_ != 0 && cached_page_use_count_[page] != 0) {
@@ -1567,67 +1608,67 @@ J6510_FAST_CODE_ATTR void Cpu6510::execute_cached_block_direct(const CachedBlock
             set_zn_local(y);
             break;
         case CachedOpKind::LdaAbs:
-            a = memory[op.operand];
+            a = read_direct(op.operand);
             pc = static_cast<uint16_t>(pc + 3);
             set_zn_local(a);
             break;
         case CachedOpKind::LdxAbs:
-            x = memory[op.operand];
+            x = read_direct(op.operand);
             pc = static_cast<uint16_t>(pc + 3);
             set_zn_local(x);
             break;
         case CachedOpKind::LdaZpX:
-            a = memory[static_cast<uint8_t>(op.operand + x)];
+            a = read_direct(static_cast<uint8_t>(op.operand + x));
             pc = static_cast<uint16_t>(pc + 2);
             set_zn_local(a);
             break;
         case CachedOpKind::LdaAbsY:
-            a = memory[static_cast<uint16_t>(op.operand + y)];
+            a = read_direct(static_cast<uint16_t>(op.operand + y));
             pc = static_cast<uint16_t>(pc + 3);
             set_zn_local(a);
             break;
         case CachedOpKind::LdaZp:
-            a = memory[static_cast<uint8_t>(op.operand)];
+            a = read_direct(static_cast<uint8_t>(op.operand));
             pc = static_cast<uint16_t>(pc + 2);
             set_zn_local(a);
             break;
         case CachedOpKind::LdxZp:
-            x = memory[static_cast<uint8_t>(op.operand)];
+            x = read_direct(static_cast<uint8_t>(op.operand));
             pc = static_cast<uint16_t>(pc + 2);
             set_zn_local(x);
             break;
         case CachedOpKind::LdyZp:
-            y = memory[static_cast<uint8_t>(op.operand)];
+            y = read_direct(static_cast<uint8_t>(op.operand));
             pc = static_cast<uint16_t>(pc + 2);
             set_zn_local(y);
             break;
         case CachedOpKind::LdyAbs:
-            y = memory[op.operand];
+            y = read_direct(op.operand);
             pc = static_cast<uint16_t>(pc + 3);
             set_zn_local(y);
             break;
         case CachedOpKind::LdxZpY:
-            x = memory[static_cast<uint8_t>(op.operand + y)];
+            x = read_direct(static_cast<uint8_t>(op.operand + y));
             pc = static_cast<uint16_t>(pc + 2);
             set_zn_local(x);
             break;
         case CachedOpKind::LdyZpX:
-            y = memory[static_cast<uint8_t>(op.operand + x)];
+            y = read_direct(static_cast<uint8_t>(op.operand + x));
             pc = static_cast<uint16_t>(pc + 2);
             set_zn_local(y);
             break;
         case CachedOpKind::LdaAbsX:
-            a = memory[static_cast<uint16_t>(op.operand + x)];
+            a = read_direct(static_cast<uint16_t>(op.operand + x));
             pc = static_cast<uint16_t>(pc + 3);
             set_zn_local(a);
             break;
         case CachedOpKind::LdxAbsY:
-            x = memory[static_cast<uint16_t>(op.operand + y)];
+            x = read_direct(static_cast<uint16_t>(op.operand + y));
             pc = static_cast<uint16_t>(pc + 3);
             set_zn_local(x);
             break;
         case CachedOpKind::LdyAbsX:
-            y = memory[static_cast<uint16_t>(op.operand + x)];
+            y = read_direct(static_cast<uint16_t>(op.operand + x));
             pc = static_cast<uint16_t>(pc + 3);
             set_zn_local(y);
             break;
@@ -1752,7 +1793,7 @@ J6510_FAST_CODE_ATTR void Cpu6510::execute_cached_block_direct(const CachedBlock
             break;
         case CachedOpKind::IncZp: {
             const uint16_t address = static_cast<uint8_t>(op.operand);
-            const uint8_t value = static_cast<uint8_t>(memory[address] + 1);
+            const uint8_t value = static_cast<uint8_t>(read_direct(address) + 1);
             write_direct(address, value);
             pc = static_cast<uint16_t>(pc + 2);
             set_zn_local(value);
