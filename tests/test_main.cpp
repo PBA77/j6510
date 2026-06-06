@@ -1253,6 +1253,48 @@ void test_run_cached_ir_flags_and_branches_match_step() {
     require(cached_cpu.block_cache_stats().fallback_instructions == 0, "run_cached flags and branches stay in IR");
 }
 
+void test_run_cached_ir_load_store_transfer_matches_step() {
+    RamBus step_bus;
+    RamBus cached_bus;
+    step_bus.set_reset_vector(0x1700);
+    cached_bus.set_reset_vector(0x1700);
+    const uint8_t program[] = {
+        0xA9, 0x12,       // LDA #$12
+        0xA8,             // TAY
+        0xC8,             // INY
+        0x84, 0x40,       // STY $40
+        0xA4, 0x40,       // LDY $40
+        0x8C, 0x00, 0x31, // STY $3100
+        0xAC, 0x00, 0x31, // LDY $3100
+        0x98,             // TYA
+        0xAA,             // TAX
+        0x9A,             // TXS
+        0xBA,             // TSX
+        0x86, 0x41,       // STX $41
+        0xA6, 0x41,       // LDX $41
+        0x9D, 0x00, 0x31, // STA $3100,X
+        0xA5, 0x40,       // LDA $40
+        0x4C, 0x00, 0x17, // JMP $1700
+    };
+    step_bus.load(0x1700, program, sizeof(program));
+    cached_bus.load(0x1700, program, sizeof(program));
+    Cpu6510 step_cpu(step_bus, Cpu6510Config{false});
+    Cpu6510 cached_cpu(cached_bus, Cpu6510Config{false});
+    step_cpu.reset();
+    cached_cpu.reset();
+
+    for (int i = 0; i < 16; ++i) {
+        require(step_cpu.step() == StepResult::Ok, "reference step for cached IR load/store/transfer executes");
+    }
+    const RunResult cached = cached_cpu.run_cached(16);
+
+    require(cached.result == StepResult::Ok, "run_cached IR load/store/transfer returns Ok");
+    require(cached.instructions_executed == 16, "run_cached IR load/store/transfer reports instruction budget");
+    require_same_state(step_cpu.state(), cached_cpu.state(), "run_cached IR load/store/transfer state");
+    require(step_bus.memory == cached_bus.memory, "run_cached IR load/store/transfer memory");
+    require(cached_cpu.block_cache_stats().fallback_instructions == 0, "run_cached load/store/transfer stays in IR");
+}
+
 } // namespace
 
 int main() {
@@ -1290,6 +1332,7 @@ int main() {
     test_run_cached_ir_mixed_loop_matches_step();
     test_run_cached_reports_ir_and_fallback_coverage();
     test_run_cached_ir_flags_and_branches_match_step();
+    test_run_cached_ir_load_store_transfer_matches_step();
 
     std::cout << "All j6510 tests passed\n";
     return 0;
