@@ -1,0 +1,117 @@
+#pragma once
+
+#include "cpu6510_bus.h"
+#include "cpu6510_opcode_table.h"
+
+#include <cstdint>
+#include <functional>
+
+namespace j6510 {
+
+constexpr uint8_t FLAG_C = 0x01;
+constexpr uint8_t FLAG_Z = 0x02;
+constexpr uint8_t FLAG_I = 0x04;
+constexpr uint8_t FLAG_D = 0x08;
+constexpr uint8_t FLAG_B = 0x10;
+constexpr uint8_t FLAG_U = 0x20;
+constexpr uint8_t FLAG_V = 0x40;
+constexpr uint8_t FLAG_N = 0x80;
+
+struct Cpu6510State {
+    uint8_t a = 0;
+    uint8_t x = 0;
+    uint8_t y = 0;
+    uint8_t sp = 0xFD;
+    uint16_t pc = 0;
+    uint8_t p = FLAG_U | FLAG_I;
+};
+
+struct InterruptState {
+    bool reset_pending = false;
+    bool nmi_pending = false;
+    bool irq_level = false;
+};
+
+struct Port6510State {
+    uint8_t ddr = 0x2F;
+    uint8_t data = 0x37;
+    uint8_t external_inputs = 0xFF;
+    uint8_t active_mask = 0x3F;
+};
+
+struct Cpu6510Config {
+    bool port_enabled = true;
+};
+
+enum class StepResult {
+    Ok,
+    IllegalOpcode,
+};
+
+class Cpu6510 {
+public:
+    explicit Cpu6510(Bus& bus);
+    Cpu6510(Bus& bus, Cpu6510Config config);
+
+    Cpu6510State& state();
+    const Cpu6510State& state() const;
+    const InterruptState& interrupts() const;
+    const Port6510State& port() const;
+
+    void request_reset();
+    void pulse_nmi();
+    void set_irq_level(bool active);
+    void clear_irq_level();
+    void poll_target_interrupts();
+    void service_pending_interrupt_if_needed();
+
+    void reset();
+    StepResult step();
+
+    void set_port_external_inputs(uint8_t value);
+    void set_port_active_mask(uint8_t mask);
+    uint8_t port_output() const;
+    void set_port_changed_callback(std::function<void(uint8_t)> callback);
+
+    void push(uint8_t value);
+    uint8_t pull();
+
+private:
+    Bus& bus_;
+    Cpu6510Config config_{};
+    Cpu6510State state_{};
+    InterruptState interrupts_{};
+    Port6510State port_{};
+    std::function<void(uint8_t)> port_changed_callback_{};
+
+    uint8_t read(uint16_t address);
+    void write(uint16_t address, uint8_t value);
+    uint8_t fetch8();
+    uint16_t fetch16();
+    uint16_t read16(uint16_t address);
+    uint16_t read16_zp(uint8_t address);
+    uint16_t read16_nmos_indirect(uint16_t address);
+
+    void set_flag(uint8_t flag, bool enabled);
+    bool flag(uint8_t flag) const;
+    void set_zn(uint8_t value);
+    uint8_t normalized_p(uint8_t value) const;
+    bool is_port_address(uint16_t address) const;
+    uint8_t read_port(uint16_t address) const;
+    void write_port(uint16_t address, uint8_t value);
+    void notify_port_if_changed(uint8_t old_output);
+    uint8_t read_operand(AddressingMode mode);
+    void write_operand(AddressingMode mode, uint8_t value);
+    void compare(uint8_t lhs, uint8_t rhs);
+    void adc(uint8_t value);
+    void sbc(uint8_t value);
+    void asl(AddressingMode mode);
+    void lsr(AddressingMode mode);
+    void rol(AddressingMode mode);
+    void ror(AddressingMode mode);
+    void branch_if(bool condition);
+    void interrupt(uint16_t vector, bool break_flag, uint16_t return_pc);
+    uint16_t operand_address(AddressingMode mode);
+};
+
+} // namespace j6510

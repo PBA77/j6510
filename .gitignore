@@ -1,0 +1,20 @@
+# Build output
+build/
+cmake-build-*/
+
+# Local editor/session files
+*.swp
+*.swo
+*~
+
+# Agent planning/private working notes
+AGENTS
+
+# Downloaded third-party test assets. Use scripts/fetch_external_tests.sh.
+third_party/klaus/*.a65
+third_party/klaus/*.bin
+third_party/klaus/*.lst
+third_party/klaus/readme.txt
+
+# macOS
+.DS_Store
