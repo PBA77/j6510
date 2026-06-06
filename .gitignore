@@ -2,6 +2,7 @@
 build/
 build-*/
 cmake-build-*/
+.pio/
 
 # Local editor/session files
 *.swp
