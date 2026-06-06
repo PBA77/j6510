@@ -4,6 +4,22 @@
 
 namespace j6510 {
 
+namespace {
+
+uint16_t make_branch_operand(uint16_t operand, uint8_t flag) {
+    return static_cast<uint16_t>((operand << 8) | flag);
+}
+
+uint8_t branch_flag(uint16_t operand) {
+    return static_cast<uint8_t>(operand);
+}
+
+int8_t branch_offset(uint16_t operand) {
+    return static_cast<int8_t>(operand >> 8);
+}
+
+} // namespace
+
 Cpu6510::Cpu6510(Bus& bus) : Cpu6510(bus, Cpu6510Config{}) {}
 
 Cpu6510::Cpu6510(Bus& bus, Cpu6510Config config) : bus_(bus), direct_memory_(bus.direct_memory()), config_(config) {}
@@ -694,13 +710,13 @@ bool Cpu6510::execute_cached_block(const CachedBlock& block, uint32_t remaining_
 bool Cpu6510::decode_cached_op(uint8_t opcode, uint16_t operand, CachedOp& op) const {
     switch (opcode) {
     case 0x10:
-        op = CachedOp{CachedOpKind::BranchClear, static_cast<uint16_t>((operand << 8) | FLAG_N)};
+        op = CachedOp{CachedOpKind::BranchClear, make_branch_operand(operand, FLAG_N)};
         return true;
     case 0x18:
         op = CachedOp{CachedOpKind::FlagClear, FLAG_C};
         return true;
     case 0x30:
-        op = CachedOp{CachedOpKind::BranchSet, static_cast<uint16_t>((operand << 8) | FLAG_N)};
+        op = CachedOp{CachedOpKind::BranchSet, make_branch_operand(operand, FLAG_N)};
         return true;
     case 0x38:
         op = CachedOp{CachedOpKind::FlagSet, FLAG_C};
@@ -709,13 +725,13 @@ bool Cpu6510::decode_cached_op(uint8_t opcode, uint16_t operand, CachedOp& op) c
         op = CachedOp{CachedOpKind::JmpAbs, operand};
         return true;
     case 0x50:
-        op = CachedOp{CachedOpKind::BranchClear, static_cast<uint16_t>((operand << 8) | FLAG_V)};
+        op = CachedOp{CachedOpKind::BranchClear, make_branch_operand(operand, FLAG_V)};
         return true;
     case 0x58:
         op = CachedOp{CachedOpKind::FlagClear, FLAG_I};
         return true;
     case 0x70:
-        op = CachedOp{CachedOpKind::BranchSet, static_cast<uint16_t>((operand << 8) | FLAG_V)};
+        op = CachedOp{CachedOpKind::BranchSet, make_branch_operand(operand, FLAG_V)};
         return true;
     case 0x78:
         op = CachedOp{CachedOpKind::FlagSet, FLAG_I};
@@ -799,10 +815,10 @@ bool Cpu6510::decode_cached_op(uint8_t opcode, uint16_t operand, CachedOp& op) c
         op = CachedOp{CachedOpKind::LdaAbsY, operand};
         return true;
     case 0x90:
-        op = CachedOp{CachedOpKind::BranchClear, static_cast<uint16_t>((operand << 8) | FLAG_C)};
+        op = CachedOp{CachedOpKind::BranchClear, make_branch_operand(operand, FLAG_C)};
         return true;
     case 0xB0:
-        op = CachedOp{CachedOpKind::BranchSet, static_cast<uint16_t>((operand << 8) | FLAG_C)};
+        op = CachedOp{CachedOpKind::BranchSet, make_branch_operand(operand, FLAG_C)};
         return true;
     case 0xB8:
         op = CachedOp{CachedOpKind::FlagClear, FLAG_V};
@@ -817,7 +833,7 @@ bool Cpu6510::decode_cached_op(uint8_t opcode, uint16_t operand, CachedOp& op) c
         op = CachedOp{CachedOpKind::Iny, 0};
         return true;
     case 0xD0:
-        op = CachedOp{CachedOpKind::Bne, operand};
+        op = CachedOp{CachedOpKind::BranchClear, make_branch_operand(operand, FLAG_Z)};
         return true;
     case 0xE8:
         op = CachedOp{CachedOpKind::Inx, 0};
@@ -829,7 +845,7 @@ bool Cpu6510::decode_cached_op(uint8_t opcode, uint16_t operand, CachedOp& op) c
         op = CachedOp{CachedOpKind::Nop, 0};
         return true;
     case 0xF0:
-        op = CachedOp{CachedOpKind::BranchSet, static_cast<uint16_t>((operand << 8) | FLAG_Z)};
+        op = CachedOp{CachedOpKind::BranchSet, make_branch_operand(operand, FLAG_Z)};
         return true;
     case 0xF8:
         op = CachedOp{CachedOpKind::FlagSet, FLAG_D};
@@ -1029,20 +1045,14 @@ void Cpu6510::execute_cached_op(const CachedOp& op) {
         return;
     case CachedOpKind::BranchSet:
         state_.pc = static_cast<uint16_t>(state_.pc + 2);
-        if ((state_.p & static_cast<uint8_t>(op.operand)) != 0) {
-            state_.pc = static_cast<uint16_t>(state_.pc + static_cast<int8_t>(op.operand >> 8));
+        if ((state_.p & branch_flag(op.operand)) != 0) {
+            state_.pc = static_cast<uint16_t>(state_.pc + branch_offset(op.operand));
         }
         return;
     case CachedOpKind::BranchClear:
         state_.pc = static_cast<uint16_t>(state_.pc + 2);
-        if ((state_.p & static_cast<uint8_t>(op.operand)) == 0) {
-            state_.pc = static_cast<uint16_t>(state_.pc + static_cast<int8_t>(op.operand >> 8));
-        }
-        return;
-    case CachedOpKind::Bne:
-        state_.pc = static_cast<uint16_t>(state_.pc + 2);
-        if ((state_.p & FLAG_Z) == 0) {
-            state_.pc = static_cast<uint16_t>(state_.pc + static_cast<int8_t>(op.operand));
+        if ((state_.p & branch_flag(op.operand)) == 0) {
+            state_.pc = static_cast<uint16_t>(state_.pc + branch_offset(op.operand));
         }
         return;
     case CachedOpKind::JmpAbs:
@@ -1232,20 +1242,14 @@ void Cpu6510::execute_cached_block_direct(const CachedBlock& block, uint32_t to_
             break;
         case CachedOpKind::BranchSet:
             pc = static_cast<uint16_t>(pc + 2);
-            if ((p & static_cast<uint8_t>(op.operand)) != 0) {
-                pc = static_cast<uint16_t>(pc + static_cast<int8_t>(op.operand >> 8));
+            if ((p & branch_flag(op.operand)) != 0) {
+                pc = static_cast<uint16_t>(pc + branch_offset(op.operand));
             }
             break;
         case CachedOpKind::BranchClear:
             pc = static_cast<uint16_t>(pc + 2);
-            if ((p & static_cast<uint8_t>(op.operand)) == 0) {
-                pc = static_cast<uint16_t>(pc + static_cast<int8_t>(op.operand >> 8));
-            }
-            break;
-        case CachedOpKind::Bne:
-            pc = static_cast<uint16_t>(pc + 2);
-            if ((p & FLAG_Z) == 0) {
-                pc = static_cast<uint16_t>(pc + static_cast<int8_t>(op.operand));
+            if ((p & branch_flag(op.operand)) == 0) {
+                pc = static_cast<uint16_t>(pc + branch_offset(op.operand));
             }
             break;
         case CachedOpKind::JmpAbs:

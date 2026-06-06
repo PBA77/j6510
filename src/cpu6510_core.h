@@ -163,13 +163,13 @@ private:
         FlagClear,
         BranchSet,
         BranchClear,
-        Bne,
         JmpAbs,
     };
     struct CachedOp {
         CachedOpKind kind = CachedOpKind::Fallback;
         uint16_t operand = 0;
     };
+    static_assert(sizeof(CachedOp) <= 4, "CachedOp should stay compact");
     struct CachedBlock {
         bool valid = false;
         bool executable = false;
