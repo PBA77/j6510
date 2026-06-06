@@ -601,6 +601,7 @@ Cpu6510::CachedBlock Cpu6510::decode_block(uint16_t pc) {
     CachedBlock block{};
     block.valid = true;
     block.executable = true;
+    block.hot_executable = true;
     block.start_pc = pc;
     block.page_start = static_cast<uint8_t>(pc >> 8);
     const auto disable_ir_for_unsafe_writes = [this, &block]() {
@@ -636,12 +637,16 @@ Cpu6510::CachedBlock Cpu6510::decode_block(uint16_t pc) {
         CachedOp& op = block.ops[block.count];
         if (!decode_cached_op(opcode, operand, op)) {
             block.executable = false;
+            block.hot_executable = false;
+        } else if (!is_hot_cached_op(op.kind)) {
+            block.hot_executable = false;
         }
 
         if (info.operation == Operation::Illegal) {
             block.page_end = static_cast<uint8_t>(cursor >> 8);
             block.terminator = RunStopReason::IllegalOpcode;
             block.executable = false;
+            block.hot_executable = false;
             ++block.count;
             return block;
         }
@@ -670,7 +675,11 @@ bool Cpu6510::execute_cached_block(const CachedBlock& block, uint32_t remaining_
         ++block_cache_stats_.ir_blocks;
         block_cache_stats_.ir_instructions += to_execute;
         if (can_use_direct_memory_path()) {
-            execute_cached_block_direct(block, to_execute, result);
+            if (block.hot_executable) {
+                execute_cached_block_direct_hot(block, to_execute, result);
+            } else {
+                execute_cached_block_direct(block, to_execute, result);
+            }
         } else {
             for (uint32_t i = 0; i < to_execute; ++i) {
                 execute_cached_op(block.ops[i]);
@@ -867,6 +876,37 @@ bool Cpu6510::decode_cached_op(uint8_t opcode, uint16_t operand, CachedOp& op) c
         return true;
     default:
         op = CachedOp{CachedOpKind::Fallback, 0};
+        return false;
+    }
+}
+
+bool Cpu6510::is_hot_cached_op(CachedOpKind kind) const {
+    switch (kind) {
+    case CachedOpKind::LdaImm:
+    case CachedOpKind::LdxImm:
+    case CachedOpKind::LdyImm:
+    case CachedOpKind::LdaAbs:
+    case CachedOpKind::LdxAbs:
+    case CachedOpKind::LdaZpX:
+    case CachedOpKind::LdaAbsY:
+    case CachedOpKind::StaAbs:
+    case CachedOpKind::StxAbs:
+    case CachedOpKind::StaZp:
+    case CachedOpKind::StaZpX:
+    case CachedOpKind::StaAbsY:
+    case CachedOpKind::Tax:
+    case CachedOpKind::Txa:
+    case CachedOpKind::Inx:
+    case CachedOpKind::Dex:
+    case CachedOpKind::Dey:
+    case CachedOpKind::Nop:
+    case CachedOpKind::FlagSet:
+    case CachedOpKind::FlagClear:
+    case CachedOpKind::BranchSet:
+    case CachedOpKind::BranchClear:
+    case CachedOpKind::JmpAbs:
+        return true;
+    default:
         return false;
     }
 }
@@ -1101,6 +1141,152 @@ void Cpu6510::execute_cached_op(const CachedOp& op) {
     case CachedOpKind::Fallback:
         return;
     }
+}
+
+void Cpu6510::execute_cached_block_direct_hot(const CachedBlock& block, uint32_t to_execute, RunResult& result) {
+    uint8_t* memory = direct_memory_;
+    uint8_t a = state_.a;
+    uint8_t x = state_.x;
+    uint8_t y = state_.y;
+    uint8_t p = state_.p;
+    uint16_t pc = state_.pc;
+
+    const auto set_zn_local = [&p](uint8_t value) {
+        p = static_cast<uint8_t>((p & ~(FLAG_Z | FLAG_N)) | FLAG_U);
+        if (value == 0) {
+            p |= FLAG_Z;
+        }
+        p |= static_cast<uint8_t>(value & FLAG_N);
+    };
+    const auto write_direct = [this, memory](uint16_t address, uint8_t value) {
+        memory[address] = value;
+        const uint8_t page = static_cast<uint8_t>(address >> 8);
+        if (valid_cached_blocks_ != 0 && cached_page_use_count_[page] != 0) {
+            invalidate_block_cache_for_write(address);
+        }
+    };
+
+    for (uint32_t i = 0; i < to_execute; ++i) {
+        const CachedOp& op = block.ops[i];
+        switch (op.kind) {
+        case CachedOpKind::LdaImm:
+            a = static_cast<uint8_t>(op.operand);
+            pc = static_cast<uint16_t>(pc + 2);
+            set_zn_local(a);
+            break;
+        case CachedOpKind::LdxImm:
+            x = static_cast<uint8_t>(op.operand);
+            pc = static_cast<uint16_t>(pc + 2);
+            set_zn_local(x);
+            break;
+        case CachedOpKind::LdyImm:
+            y = static_cast<uint8_t>(op.operand);
+            pc = static_cast<uint16_t>(pc + 2);
+            set_zn_local(y);
+            break;
+        case CachedOpKind::LdaAbs:
+            a = memory[op.operand];
+            pc = static_cast<uint16_t>(pc + 3);
+            set_zn_local(a);
+            break;
+        case CachedOpKind::LdxAbs:
+            x = memory[op.operand];
+            pc = static_cast<uint16_t>(pc + 3);
+            set_zn_local(x);
+            break;
+        case CachedOpKind::LdaZpX:
+            a = memory[static_cast<uint8_t>(op.operand + x)];
+            pc = static_cast<uint16_t>(pc + 2);
+            set_zn_local(a);
+            break;
+        case CachedOpKind::LdaAbsY:
+            a = memory[static_cast<uint16_t>(op.operand + y)];
+            pc = static_cast<uint16_t>(pc + 3);
+            set_zn_local(a);
+            break;
+        case CachedOpKind::StaAbs:
+            write_direct(op.operand, a);
+            pc = static_cast<uint16_t>(pc + 3);
+            break;
+        case CachedOpKind::StxAbs:
+            write_direct(op.operand, x);
+            pc = static_cast<uint16_t>(pc + 3);
+            break;
+        case CachedOpKind::StaZp:
+            write_direct(static_cast<uint8_t>(op.operand), a);
+            pc = static_cast<uint16_t>(pc + 2);
+            break;
+        case CachedOpKind::StaZpX:
+            write_direct(static_cast<uint8_t>(op.operand + x), a);
+            pc = static_cast<uint16_t>(pc + 2);
+            break;
+        case CachedOpKind::StaAbsY:
+            write_direct(static_cast<uint16_t>(op.operand + y), a);
+            pc = static_cast<uint16_t>(pc + 3);
+            break;
+        case CachedOpKind::Tax:
+            x = a;
+            pc = static_cast<uint16_t>(pc + 1);
+            set_zn_local(x);
+            break;
+        case CachedOpKind::Txa:
+            a = x;
+            pc = static_cast<uint16_t>(pc + 1);
+            set_zn_local(a);
+            break;
+        case CachedOpKind::Inx:
+            x = static_cast<uint8_t>(x + 1);
+            pc = static_cast<uint16_t>(pc + 1);
+            set_zn_local(x);
+            break;
+        case CachedOpKind::Dex:
+            x = static_cast<uint8_t>(x - 1);
+            pc = static_cast<uint16_t>(pc + 1);
+            set_zn_local(x);
+            break;
+        case CachedOpKind::Dey:
+            y = static_cast<uint8_t>(y - 1);
+            pc = static_cast<uint16_t>(pc + 1);
+            set_zn_local(y);
+            break;
+        case CachedOpKind::Nop:
+            pc = static_cast<uint16_t>(pc + 1);
+            break;
+        case CachedOpKind::FlagSet:
+            p = static_cast<uint8_t>(p | static_cast<uint8_t>(op.operand) | FLAG_U);
+            pc = static_cast<uint16_t>(pc + 1);
+            break;
+        case CachedOpKind::FlagClear:
+            p = static_cast<uint8_t>((p & ~static_cast<uint8_t>(op.operand)) | FLAG_U);
+            pc = static_cast<uint16_t>(pc + 1);
+            break;
+        case CachedOpKind::BranchSet:
+            pc = static_cast<uint16_t>(pc + 2);
+            if ((p & branch_flag(op.operand)) != 0) {
+                pc = static_cast<uint16_t>(pc + branch_offset(op.operand));
+            }
+            break;
+        case CachedOpKind::BranchClear:
+            pc = static_cast<uint16_t>(pc + 2);
+            if ((p & branch_flag(op.operand)) == 0) {
+                pc = static_cast<uint16_t>(pc + branch_offset(op.operand));
+            }
+            break;
+        case CachedOpKind::JmpAbs:
+            pc = op.operand;
+            break;
+        default:
+            break;
+        }
+    }
+
+    state_.a = a;
+    state_.x = x;
+    state_.y = y;
+    state_.p = static_cast<uint8_t>(p | FLAG_U);
+    state_.pc = pc;
+    result.instructions_executed += to_execute;
+    result.stop_pc = pc;
 }
 
 void Cpu6510::execute_cached_block_direct(const CachedBlock& block, uint32_t to_execute, RunResult& result) {

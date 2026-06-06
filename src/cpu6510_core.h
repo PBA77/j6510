@@ -178,6 +178,7 @@ private:
     struct CachedBlock {
         bool valid = false;
         bool executable = false;
+        bool hot_executable = false;
         uint16_t start_pc = 0;
         uint8_t count = 0;
         uint8_t page_start = 0;
@@ -202,10 +203,12 @@ private:
     CachedBlock decode_block(uint16_t pc);
     bool execute_cached_block(const CachedBlock& block, uint32_t remaining_budget, RunResult& result);
     bool decode_cached_op(uint8_t opcode, uint16_t operand, CachedOp& op) const;
+    bool is_hot_cached_op(CachedOpKind kind) const;
     bool cached_write_is_safe_for_block(const CachedBlock& block, const CachedOp& op) const;
     bool can_use_direct_memory_path() const;
     void direct_write(uint16_t address, uint8_t value);
     void execute_cached_op(const CachedOp& op);
+    void execute_cached_block_direct_hot(const CachedBlock& block, uint32_t to_execute, RunResult& result);
     void execute_cached_block_direct(const CachedBlock& block, uint32_t to_execute, RunResult& result);
     uint8_t fetch8();
     uint16_t fetch16();

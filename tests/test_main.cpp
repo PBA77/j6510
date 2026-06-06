@@ -1334,6 +1334,7 @@ void test_run_cached_ir_indexed_loads_match_step() {
     require(cached.instructions_executed == 9, "run_cached IR indexed loads reports instruction budget");
     require_same_state(step_cpu.state(), cached_cpu.state(), "run_cached IR indexed loads state");
     require(cached_cpu.block_cache_stats().fallback_instructions == 0, "run_cached indexed loads stay in IR");
+    require(cached_cpu.block_cache_stats().ir_instructions == 9, "run_cached indexed loads count as IR");
 }
 
 } // namespace
