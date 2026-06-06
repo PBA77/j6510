@@ -32,6 +32,28 @@ void require_same_state(const Cpu6510State& lhs, const Cpu6510State& rhs, const 
     require(lhs.p == rhs.p, context + " P matches");
 }
 
+void load_realish_program(RamBus& bus, uint16_t address) {
+    const uint8_t program[] = {
+        0xA2, 0x1F,       // LDX #$1F
+        0xA9, 0x00,       // LDA #$00
+        0x85, 0x30,       // STA $30
+        0xBD, 0x00, 0x40, // LDA $4000,X
+        0x18,             // CLC
+        0x69, 0x03,       // ADC #$03
+        0x9D, 0x80, 0x40, // STA $4080,X
+        0xC9, 0x80,       // CMP #$80
+        0x90, 0x02,       // BCC over INC
+        0xE6, 0x30,       // INC $30
+        0xCA,             // DEX
+        0x10, 0xEE,       // BPL loop
+        0x4C, 0x00, 0x04, // JMP $0400
+    };
+    bus.load(address, program, sizeof(program));
+    for (uint16_t i = 0; i < 0x20; ++i) {
+        bus.memory[static_cast<uint16_t>(0x4000 + i)] = static_cast<uint8_t>(0x90 + i);
+    }
+}
+
 void test_reset_loads_pc_from_vector() {
     RamBus bus;
     bus.set_reset_vector(0xC000);
@@ -1339,6 +1361,82 @@ void test_run_cached_ir_indexed_loads_match_step() {
     require(cached_cpu.block_cache_stats().ir_instructions == 9, "run_cached indexed loads count as IR");
 }
 
+void test_run_cached_ir_adc_cmp_inc_match_step() {
+    RamBus step_bus;
+    RamBus cached_bus;
+    RamBus generic_bus;
+    step_bus.set_reset_vector(0x1900);
+    cached_bus.set_reset_vector(0x1900);
+    generic_bus.set_reset_vector(0x1900);
+    const uint8_t program[] = {
+        0xF8,             // SED
+        0xA9, 0x45,       // LDA #$45
+        0x69, 0x55,       // ADC #$55, decimal result $00 with carry
+        0x85, 0x20,       // STA $20
+        0xD8,             // CLD
+        0x18,             // CLC
+        0xA9, 0x7F,       // LDA #$7F
+        0x69, 0x01,       // ADC #$01, binary overflow to $80
+        0xC9, 0x80,       // CMP #$80
+        0xE6, 0x20,       // INC $20
+        0x90, 0x02,       // BCC, not taken after CMP equality
+        0xA9, 0xFE,       // LDA #$FE
+        0x4C, 0x00, 0x19, // JMP $1900
+    };
+    step_bus.load(0x1900, program, sizeof(program));
+    cached_bus.load(0x1900, program, sizeof(program));
+    generic_bus.load(0x1900, program, sizeof(program));
+    Cpu6510 step_cpu(step_bus, Cpu6510Config{false});
+    Cpu6510 cached_cpu(cached_bus, Cpu6510Config{false});
+    Cpu6510 generic_cpu(generic_bus);
+    step_cpu.reset();
+    cached_cpu.reset();
+    generic_cpu.reset();
+
+    for (int i = 0; i < 13; ++i) {
+        require(step_cpu.step() == StepResult::Ok, "reference step for cached IR ADC/CMP/INC executes");
+    }
+    const RunResult cached = cached_cpu.run_cached(13);
+    const RunResult generic = generic_cpu.run_cached(13);
+
+    require(cached.result == StepResult::Ok, "run_cached IR ADC/CMP/INC returns Ok");
+    require(cached.instructions_executed == 13, "run_cached IR ADC/CMP/INC reports instruction budget");
+    require_same_state(step_cpu.state(), cached_cpu.state(), "run_cached IR ADC/CMP/INC state");
+    require(step_bus.memory == cached_bus.memory, "run_cached IR ADC/CMP/INC memory");
+    require(cached_cpu.block_cache_stats().fallback_instructions == 0, "run_cached ADC/CMP/INC stays in IR");
+    require(generic.result == StepResult::Ok, "generic cached IR ADC/CMP/INC returns Ok");
+    require(generic.instructions_executed == 13, "generic cached IR ADC/CMP/INC reports instruction budget");
+    require_same_state(step_cpu.state(), generic_cpu.state(), "generic cached IR ADC/CMP/INC state");
+    require(step_bus.memory == generic_bus.memory, "generic cached IR ADC/CMP/INC memory");
+    require(generic_cpu.block_cache_stats().fallback_instructions == 0, "generic cached ADC/CMP/INC stays in IR");
+}
+
+void test_run_cached_realish_stress_matches_step() {
+    RamBus step_bus;
+    RamBus cached_bus;
+    step_bus.set_reset_vector(0x0400);
+    cached_bus.set_reset_vector(0x0400);
+    load_realish_program(step_bus, 0x0400);
+    load_realish_program(cached_bus, 0x0400);
+    Cpu6510 step_cpu(step_bus, Cpu6510Config{false});
+    Cpu6510 cached_cpu(cached_bus, Cpu6510Config{false});
+    step_cpu.reset();
+    cached_cpu.reset();
+
+    constexpr int iterations = 100;
+    constexpr int instructions_per_iteration = 292;
+    constexpr int total_instructions = iterations * instructions_per_iteration;
+    run_steps(step_cpu, total_instructions, "reference step for realish cached stress");
+    const RunResult cached = cached_cpu.run_cached(total_instructions);
+
+    require(cached.result == StepResult::Ok, "run_cached realish stress returns Ok");
+    require(cached.instructions_executed == total_instructions, "run_cached realish stress reports instruction budget");
+    require_same_state(step_cpu.state(), cached_cpu.state(), "run_cached realish stress state");
+    require(step_bus.memory == cached_bus.memory, "run_cached realish stress memory");
+    require(cached_cpu.block_cache_stats().fallback_instructions == 0, "run_cached realish stress stays in IR");
+    require(cached_cpu.block_cache_stats().hits > 0, "run_cached realish stress records cache hits");
+}
+
 } // namespace
 
 int main() {
@@ -1378,6 +1476,8 @@ int main() {
     test_run_cached_ir_flags_and_branches_match_step();
     test_run_cached_ir_load_store_transfer_matches_step();
     test_run_cached_ir_indexed_loads_match_step();
+    test_run_cached_ir_adc_cmp_inc_match_step();
+    test_run_cached_realish_stress_matches_step();
 
     std::cout << "All j6510 tests passed\n";
     return 0;

@@ -85,12 +85,11 @@ mixed cached equivalent: ~1468 MHz
 mixed cached hits/misses/invalidations: 24999997/3/0
 mixed cached IR/fallback instructions: 150000000/0
 
-realish step equivalent:   ~406 MHz
-realish run equivalent:    ~439 MHz
-realish block equivalent:  ~332 MHz
-realish cached equivalent: ~272 MHz
-realish cached IR/fallback instructions: 100000/29100000
-realish unsupported fallback opcodes: $69 ADC #, $C9 CMP #, $E6 INC zp
+realish step equivalent:   ~425 MHz
+realish run equivalent:    ~427 MHz
+realish block equivalent:  ~329 MHz
+realish cached equivalent: ~962 MHz
+realish cached IR/fallback instructions: 29200000/0
 ```
 
 `run_cached()` now uses a small executable cached payload for selected hot
@@ -99,14 +98,12 @@ Self-modifying code remains conservative: cached blocks are invalidated by page,
 and blocks with static writes to their own code page do not use the executable
 payload. Direct 64 KB RAM buses use a faster read/write path when the 6510 port
 is disabled, and executable cached blocks use a tight direct-memory loop with
-local CPU registers. This backend is currently treated as a frozen optimization
-stage: synthetic hot loops are fully covered by IR, while the `realish` diagnostic
-shows that adding more IR should be driven by unsupported fallback opcode data,
-not by guessing.
+local CPU registers. The `realish` diagnostic now stays fully in IR after adding
+the previously dominant `ADC #`, `CMP #`, and `INC zp` cached operations.
 
-Current decision: do not keep widening IR blindly. If the next optimization pass
-is needed, the first measurable candidates are `ADC #`, `CMP #`, and `INC zp`,
-because they dominate unsupported fallback in the `realish` program.
+Current decision: the easy cached-IR wins are mostly consumed. Further widening
+should wait for a real workload histogram or for a deliberate larger design such
+as partial fallback inside executable blocks.
 
 ## External CPU Test Suites
 

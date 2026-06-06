@@ -171,6 +171,9 @@ private:
         BranchSet,
         BranchClear,
         JmpAbs,
+        AdcImm,
+        CmpImm,
+        IncZp,
     };
     struct CachedOp {
         CachedOpKind kind = CachedOpKind::Fallback;
