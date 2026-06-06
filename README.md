@@ -70,17 +70,17 @@ Current local Release baseline after the first cached-block IR pass:
 iterations: 10000000
 instructions: 90000000
 nominal 6502 cycles: 270000000
-step 6502 equivalent:   ~439 MHz
-run 6502 equivalent:    ~653 MHz
-block 6502 equivalent:  ~459 MHz
-cached 6502 equivalent: ~1528 MHz
+step 6502 equivalent:   ~455 MHz
+run 6502 equivalent:    ~649 MHz
+block 6502 equivalent:  ~454 MHz
+cached 6502 equivalent: ~1499 MHz
 cached hits/misses/invalidations: 9999999/1/0
 cached IR/fallback instructions: 90000000/0
 
-mixed step equivalent:   ~499 MHz
-mixed run equivalent:    ~731 MHz
-mixed block equivalent:  ~505 MHz
-mixed cached equivalent: ~1399 MHz
+mixed step equivalent:   ~485 MHz
+mixed run equivalent:    ~734 MHz
+mixed block equivalent:  ~493 MHz
+mixed cached equivalent: ~1152 MHz
 mixed cached hits/misses/invalidations: 24999997/3/0
 mixed cached IR/fallback instructions: 150000000/0
 ```
