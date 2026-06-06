@@ -377,6 +377,45 @@ RunResult Cpu6510::run(uint32_t max_instructions) {
     return result;
 }
 
+BlockRunResult Cpu6510::run_block(uint32_t max_instructions) {
+    BlockRunResult result{};
+    result.start_pc = state_.pc;
+
+    for (uint32_t i = 0; i < max_instructions; ++i) {
+        if (has_pending_interrupt_work()) {
+            result.stop_reason = RunStopReason::InterruptPending;
+            result.instructions_executed = i;
+            result.stop_pc = state_.pc;
+            return result;
+        }
+
+        const uint16_t pc_before = state_.pc;
+        const uint8_t opcode = read(pc_before);
+        StepResult step_result = StepResult::Ok;
+        if (!can_use_fast_run_path() || !run_fast_instruction(step_result)) {
+            step_result = step();
+        }
+
+        result.instructions_executed = static_cast<uint32_t>(i + 1);
+        result.stop_pc = state_.pc;
+
+        if (step_result != StepResult::Ok) {
+            result.result = step_result;
+            result.stop_reason = RunStopReason::IllegalOpcode;
+            return result;
+        }
+
+        if (is_block_terminator(opcode)) {
+            result.stop_reason = RunStopReason::ControlFlow;
+            return result;
+        }
+    }
+
+    result.stop_reason = RunStopReason::BudgetExhausted;
+    result.stop_pc = state_.pc;
+    return result;
+}
+
 void Cpu6510::set_port_external_inputs(uint8_t value) {
     port_.external_inputs = value;
 }
@@ -510,7 +549,7 @@ void Cpu6510::notify_port_if_changed(uint8_t old_output) {
 }
 
 bool Cpu6510::can_use_fast_run_path() const {
-    return !interrupt_poll_callback_ && !interrupts_.reset_pending && !interrupts_.nmi_pending && !interrupts_.irq_level;
+    return !has_pending_interrupt_work();
 }
 
 bool Cpu6510::run_fast_instruction(StepResult& result) {
@@ -761,6 +800,32 @@ bool Cpu6510::run_fast_instruction(StepResult& result) {
         result = StepResult::Ok;
         return false;
     }
+}
+
+bool Cpu6510::is_block_terminator(uint8_t opcode) const {
+    switch (opcode) {
+    case 0x00: // BRK
+    case 0x10: // BPL
+    case 0x20: // JSR
+    case 0x30: // BMI
+    case 0x40: // RTI
+    case 0x4C: // JMP abs
+    case 0x50: // BVC
+    case 0x60: // RTS
+    case 0x6C: // JMP indirect
+    case 0x70: // BVS
+    case 0x90: // BCC
+    case 0xB0: // BCS
+    case 0xD0: // BNE
+    case 0xF0: // BEQ
+        return true;
+    default:
+        return false;
+    }
+}
+
+bool Cpu6510::has_pending_interrupt_work() const {
+    return interrupt_poll_callback_ || interrupts_.reset_pending || interrupts_.nmi_pending || interrupts_.irq_level;
 }
 
 uint8_t Cpu6510::fast_fetch8() {

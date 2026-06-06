@@ -33,8 +33,8 @@ std::string parse_mode(int argc, char** argv) {
     }
 
     std::string mode = argv[1];
-    if (mode != "step" && mode != "run" && mode != "both" && mode != "mixed") {
-        std::cerr << "usage: j6510_benchmark [step|run|both|mixed] [positive_iterations]\n";
+    if (mode != "step" && mode != "run" && mode != "block" && mode != "both" && mode != "mixed") {
+        std::cerr << "usage: j6510_benchmark [step|run|block|both|mixed] [positive_iterations]\n";
         std::exit(2);
     }
     return mode;
@@ -137,7 +137,34 @@ void run_batch_benchmark(uint64_t total_instructions, uint64_t total_cycles) {
     print_result("run", std::chrono::duration<double>(end - start).count(), total_instructions, total_cycles);
 }
 
-void run_mixed_benchmark(uint64_t iterations, bool batch) {
+void run_block_benchmark(uint64_t total_instructions, uint64_t total_cycles) {
+    RamBus bus;
+    load_benchmark_program(bus);
+    Cpu6510 cpu(bus, Cpu6510Config{false});
+    cpu.reset();
+
+    uint64_t executed = 0;
+    const auto start = std::chrono::steady_clock::now();
+    while (executed < total_instructions) {
+        const uint32_t remaining = static_cast<uint32_t>(total_instructions - executed);
+        const BlockRunResult result = cpu.run_block(remaining);
+        if (result.result != StepResult::Ok) {
+            std::cerr << "block benchmark stopped with error at PC=$"
+                      << std::hex << std::setw(4) << std::setfill('0') << result.stop_pc << '\n';
+            std::exit(1);
+        }
+        executed += result.instructions_executed;
+        if (result.instructions_executed == 0) {
+            std::cerr << "block benchmark made no progress at PC=$"
+                      << std::hex << std::setw(4) << std::setfill('0') << result.stop_pc << '\n';
+            std::exit(1);
+        }
+    }
+    const auto end = std::chrono::steady_clock::now();
+    print_result("block", std::chrono::duration<double>(end - start).count(), total_instructions, total_cycles);
+}
+
+void run_mixed_benchmark(uint64_t iterations, const char* mode) {
     constexpr uint64_t instructions_per_iteration = 30;
     constexpr uint64_t cycles_per_iteration = 101;
     const uint64_t total_instructions = iterations * instructions_per_iteration;
@@ -149,7 +176,7 @@ void run_mixed_benchmark(uint64_t iterations, bool batch) {
     cpu.reset();
 
     const auto start = std::chrono::steady_clock::now();
-    if (batch) {
+    if (std::string(mode) == "run") {
         if (total_instructions > std::numeric_limits<uint32_t>::max()) {
             std::cerr << "mixed run benchmark instruction count exceeds uint32_t batch API limit\n";
             std::exit(2);
@@ -159,6 +186,23 @@ void run_mixed_benchmark(uint64_t iterations, bool batch) {
             std::cerr << "mixed run benchmark stopped early at PC=$"
                       << std::hex << std::setw(4) << std::setfill('0') << result.stop_pc << '\n';
             std::exit(1);
+        }
+    } else if (std::string(mode) == "block") {
+        uint64_t executed = 0;
+        while (executed < total_instructions) {
+            const uint32_t remaining = static_cast<uint32_t>(total_instructions - executed);
+            const BlockRunResult result = cpu.run_block(remaining);
+            if (result.result != StepResult::Ok) {
+                std::cerr << "mixed block benchmark stopped with error at PC=$"
+                          << std::hex << std::setw(4) << std::setfill('0') << result.stop_pc << '\n';
+                std::exit(1);
+            }
+            executed += result.instructions_executed;
+            if (result.instructions_executed == 0) {
+                std::cerr << "mixed block benchmark made no progress at PC=$"
+                          << std::hex << std::setw(4) << std::setfill('0') << result.stop_pc << '\n';
+                std::exit(1);
+            }
         }
     } else {
         for (uint64_t i = 0; i < total_instructions; ++i) {
@@ -170,7 +214,9 @@ void run_mixed_benchmark(uint64_t iterations, bool batch) {
         }
     }
     const auto end = std::chrono::steady_clock::now();
-    print_result(batch ? "mixed run" : "mixed step", std::chrono::duration<double>(end - start).count(), total_instructions, total_cycles);
+    std::string label = "mixed ";
+    label += mode;
+    print_result(label.c_str(), std::chrono::duration<double>(end - start).count(), total_instructions, total_cycles);
 }
 
 } // namespace
@@ -186,8 +232,9 @@ int main(int argc, char** argv) {
 
     std::cout << "iterations: " << iterations << '\n';
     if (mode == "mixed") {
-        run_mixed_benchmark(iterations, false);
-        run_mixed_benchmark(iterations, true);
+        run_mixed_benchmark(iterations, "step");
+        run_mixed_benchmark(iterations, "run");
+        run_mixed_benchmark(iterations, "block");
         return 0;
     }
 
@@ -196,6 +243,9 @@ int main(int argc, char** argv) {
     }
     if (mode == "run" || mode == "both") {
         run_batch_benchmark(total_instructions, total_cycles);
+    }
+    if (mode == "block" || mode == "both") {
+        run_block_benchmark(total_instructions, total_cycles);
     }
 
     return 0;

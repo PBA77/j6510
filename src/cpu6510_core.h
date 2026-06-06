@@ -57,6 +57,21 @@ struct RunResult {
     uint16_t stop_pc = 0;
 };
 
+enum class RunStopReason {
+    BudgetExhausted,
+    ControlFlow,
+    InterruptPending,
+    IllegalOpcode,
+};
+
+struct BlockRunResult {
+    StepResult result = StepResult::Ok;
+    RunStopReason stop_reason = RunStopReason::BudgetExhausted;
+    uint32_t instructions_executed = 0;
+    uint16_t start_pc = 0;
+    uint16_t stop_pc = 0;
+};
+
 class Cpu6510 {
 public:
     explicit Cpu6510(Bus& bus);
@@ -78,6 +93,7 @@ public:
     void reset();
     StepResult step();
     RunResult run(uint32_t max_instructions);
+    BlockRunResult run_block(uint32_t max_instructions);
 
     void set_port_external_inputs(uint8_t value);
     void set_port_active_mask(uint8_t mask);
@@ -115,6 +131,8 @@ private:
     void notify_port_if_changed(uint8_t old_output);
     bool can_use_fast_run_path() const;
     bool run_fast_instruction(StepResult& result);
+    bool is_block_terminator(uint8_t opcode) const;
+    bool has_pending_interrupt_work() const;
     uint8_t fast_fetch8();
     uint16_t fast_fetch16();
     uint16_t fast_zp_x();

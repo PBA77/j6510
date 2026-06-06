@@ -997,6 +997,65 @@ void test_run_matches_step_for_e2e_program() {
     require_same_state(step_cpu.state(), run_cpu.state(), "run vs step after sentinel");
 }
 
+void test_run_block_stops_on_budget_and_control_flow() {
+    RamBus bus;
+    bus.set_reset_vector(0x0D00);
+    const uint8_t program[] = {
+        0xA9, 0x11,       // LDA #$11
+        0xAA,             // TAX
+        0xE8,             // INX
+        0xD0, 0x02,       // BNE $0D08
+        0xA9, 0x00,       // skipped
+        0x4C, 0x20, 0x0D, // JMP $0D20
+    };
+    bus.load(0x0D00, program, sizeof(program));
+    Cpu6510 cpu(bus);
+    cpu.reset();
+
+    BlockRunResult budget = cpu.run_block(2);
+    require(budget.result == StepResult::Ok, "run_block budget result is ok");
+    require(budget.stop_reason == RunStopReason::BudgetExhausted, "run_block stops on budget");
+    require(budget.instructions_executed == 2, "run_block budget counts instructions");
+    require(cpu.state().pc == 0x0D03, "run_block budget leaves PC after executed instructions");
+
+    BlockRunResult branch = cpu.run_block(10);
+    require(branch.result == StepResult::Ok, "run_block branch result is ok");
+    require(branch.stop_reason == RunStopReason::ControlFlow, "run_block stops on branch terminator");
+    require(branch.instructions_executed == 2, "run_block branch executes through branch");
+    require(cpu.state().pc == 0x0D08, "run_block branch leaves PC at branch target");
+
+    BlockRunResult jump = cpu.run_block(10);
+    require(jump.result == StepResult::Ok, "run_block jump result is ok");
+    require(jump.stop_reason == RunStopReason::ControlFlow, "run_block stops on JMP terminator");
+    require(jump.instructions_executed == 1, "run_block executes one JMP");
+    require(cpu.state().pc == 0x0D20, "run_block jump leaves PC at target");
+}
+
+void test_run_block_stops_on_illegal_and_interrupt_pending() {
+    RamBus bus;
+    bus.set_reset_vector(0x0E00);
+    bus.set_irq_brk_vector(0x0F00);
+    bus.memory[0x0E00] = 0x02;
+    Cpu6510 cpu(bus);
+    cpu.reset();
+
+    BlockRunResult illegal = cpu.run_block(4);
+    require(illegal.result == StepResult::IllegalOpcode, "run_block reports illegal opcode");
+    require(illegal.stop_reason == RunStopReason::IllegalOpcode, "run_block stop reason is illegal");
+    require(illegal.instructions_executed == 1, "run_block counts illegal instruction attempt");
+    require(illegal.stop_pc == 0x0E00, "run_block illegal stop PC is offending opcode");
+
+    bus.memory[0x0E00] = 0xEA;
+    cpu.reset();
+    cpu.state().p = FLAG_U;
+    cpu.set_irq_level(true);
+    BlockRunResult irq = cpu.run_block(4);
+    require(irq.result == StepResult::Ok, "run_block pending IRQ result is ok");
+    require(irq.stop_reason == RunStopReason::InterruptPending, "run_block stops before pending interrupt work");
+    require(irq.instructions_executed == 0, "run_block pending IRQ executes nothing");
+    require(cpu.state().pc == 0x0E00, "run_block pending IRQ preserves PC");
+}
+
 } // namespace
 
 int main() {
@@ -1027,6 +1086,8 @@ int main() {
     test_e2e_program_image_with_vectors_subroutine_and_brk_rti();
     test_e2e_memory_driven_branch_program();
     test_run_matches_step_for_e2e_program();
+    test_run_block_stops_on_budget_and_control_flow();
+    test_run_block_stops_on_illegal_and_interrupt_pending();
 
     std::cout << "All j6510 tests passed\n";
     return 0;

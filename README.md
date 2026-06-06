@@ -73,6 +73,8 @@ step 6502 equivalent: ~454 MHz
 run 6502 equivalent:  ~636 MHz
 mixed step equivalent: ~505 MHz
 mixed run equivalent:  ~677 MHz
+block equivalent before caching is currently slower than `run`; `run_block()`
+exists as the terminator-aware foundation for a future block cache.
 ```
 
 ## External CPU Test Suites
