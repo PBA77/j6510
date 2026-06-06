@@ -65,7 +65,8 @@ reference instruction path. You can pass an iteration count:
 ./build-release/j6510_benchmark realish 100000
 ```
 
-Current local Release baseline after the first cached-block IR pass:
+Current local Release baseline after the first cached-block IR pass, measured
+on an Apple M1 Max:
 
 ```text
 iterations: 10000000
