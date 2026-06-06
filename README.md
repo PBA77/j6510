@@ -15,6 +15,9 @@ adapter, ESP-IDF adapter, or host ISR code in the core.
   relative branches, indexed indirect modes, and the NMOS `JMP ($xxFF)` bug.
 - Binary and decimal `ADC/SBC` are implemented.
 - `BRK`, `RTI`, `RESET`, `NMI`, and level-triggered `IRQ` basics are present.
+- Host interrupt polling is exposed through a callback, so desktop tests and
+  embedded adapters can drive the same CPU core without platform code inside
+  the emulator.
 - The 6510 I/O port at `$0000/$0001` is implemented behind a profile flag.
 - The CPU talks to an abstract bus, with a simple 64 KB RAM bus for tests.
 
@@ -57,9 +60,25 @@ When present, CTest also runs:
 
 - Klaus Dormann `6502_functional_test.bin`
 - Bruce Clark / Klaus decimal-mode test for BCD `ADC/SBC`
+- Klaus Dormann interrupt test through a test-only feedback register adapter at
+  `$BFFC`
 
-The interrupt test from the same family is not wired in yet because it requires
-a feedback register adapter for IRQ/NMI injection.
+## Interrupt Adapters
+
+The core only understands logical CPU lines:
+
+- `request_reset()`
+- `pulse_nmi()`
+- `set_irq_level(bool)`
+
+Platform-specific sources are expected to live outside the core and drive those
+lines from `set_interrupt_poll_callback(...)`. The callback runs on instruction
+boundaries before pending interrupts are serviced.
+
+For desktop tests, `tests/klaus_interrupt_main.cpp` polls a memory-mapped
+feedback register at `$BFFC`. For an Arduino or ESP32 adapter, an ISR should set
+a small host-side flag only; the poll callback can then translate that flag into
+`pulse_nmi()` or `set_irq_level(true)` on the next instruction boundary.
 
 ## License
 

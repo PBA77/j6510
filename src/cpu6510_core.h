@@ -43,6 +43,9 @@ struct Cpu6510Config {
     bool port_enabled = true;
 };
 
+class Cpu6510;
+using InterruptPollCallback = std::function<void(Cpu6510&)>;
+
 enum class StepResult {
     Ok,
     IllegalOpcode,
@@ -63,6 +66,7 @@ public:
     void set_irq_level(bool active);
     void clear_irq_level();
     void poll_target_interrupts();
+    void set_interrupt_poll_callback(InterruptPollCallback callback);
     void service_pending_interrupt_if_needed();
 
     void reset();
@@ -83,6 +87,7 @@ private:
     InterruptState interrupts_{};
     Port6510State port_{};
     std::function<void(uint8_t)> port_changed_callback_{};
+    InterruptPollCallback interrupt_poll_callback_{};
 
     uint8_t read(uint16_t address);
     void write(uint16_t address, uint8_t value);

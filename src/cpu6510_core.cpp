@@ -40,7 +40,15 @@ void Cpu6510::clear_irq_level() {
     interrupts_.irq_level = false;
 }
 
-void Cpu6510::poll_target_interrupts() {}
+void Cpu6510::poll_target_interrupts() {
+    if (interrupt_poll_callback_) {
+        interrupt_poll_callback_(*this);
+    }
+}
+
+void Cpu6510::set_interrupt_poll_callback(InterruptPollCallback callback) {
+    interrupt_poll_callback_ = std::move(callback);
+}
 
 void Cpu6510::service_pending_interrupt_if_needed() {
     if (interrupts_.reset_pending) {

@@ -34,6 +34,7 @@ add_test(NAME j6510_tests COMMAND j6510_tests)
 
 set(KLAUS_FUNCTIONAL_IMAGE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/klaus/6502_functional_test.bin)
 set(KLAUS_DECIMAL_IMAGE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/klaus/6502_decimal_test.bin)
+set(KLAUS_INTERRUPT_IMAGE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/klaus/6502_interrupt_test.bin)
 
 add_executable(klaus_functional_test tests/klaus_functional_main.cpp)
 target_link_libraries(klaus_functional_test PRIVATE j6510_core)
@@ -51,4 +52,13 @@ if(EXISTS ${KLAUS_DECIMAL_IMAGE})
     add_test(NAME klaus_decimal_test COMMAND klaus_decimal_test ${KLAUS_DECIMAL_IMAGE})
 else()
     message(STATUS "Klaus decimal test image not found; run scripts/fetch_external_tests.sh to enable it")
+endif()
+
+add_executable(klaus_interrupt_test tests/klaus_interrupt_main.cpp)
+target_link_libraries(klaus_interrupt_test PRIVATE j6510_core)
+
+if(EXISTS ${KLAUS_INTERRUPT_IMAGE})
+    add_test(NAME klaus_interrupt_test COMMAND klaus_interrupt_test ${KLAUS_INTERRUPT_IMAGE})
+else()
+    message(STATUS "Klaus interrupt test image not found; run scripts/fetch_external_tests.sh to enable it")
 endif()

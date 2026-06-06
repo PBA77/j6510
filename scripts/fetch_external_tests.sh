@@ -26,4 +26,12 @@ curl -L --fail \
   https://raw.githubusercontent.com/analog-hors/pones/main/pones-6502/tests/decimal/6502_decimal_test.a65 \
   -o "$OUT_DIR/6502_decimal_test.a65"
 
+curl -L --fail \
+  https://raw.githubusercontent.com/analog-hors/pones/main/pones-6502/tests/klaus/bin/6502_interrupt_test.bin \
+  -o "$OUT_DIR/6502_interrupt_test.bin"
+
+curl -L --fail \
+  https://raw.githubusercontent.com/analog-hors/pones/main/pones-6502/tests/klaus/6502_interrupt_test.a65 \
+  -o "$OUT_DIR/6502_interrupt_test.a65"
+
 printf '%s\n' "External test assets downloaded to $OUT_DIR"

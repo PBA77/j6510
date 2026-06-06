@@ -229,6 +229,55 @@ void test_interrupt_placeholder_state_and_service() {
     require(!cpu.interrupts().irq_level, "clear_irq_level clears IRQ line");
 }
 
+void test_interrupt_poll_callback_nmi_edge_and_irq_level() {
+    RamBus bus;
+    bus.set_reset_vector(0x0200);
+    bus.set_nmi_vector(0x0300);
+    bus.set_irq_brk_vector(0x0400);
+    const uint8_t main_program[] = {
+        0xEA, // $0200 NOP
+        0x58, // $0201 CLI
+        0xEA, // $0202 NOP, should be interrupted before execution
+    };
+    bus.load(0x0200, main_program, sizeof(main_program));
+    bus.memory[0x0300] = 0x40; // RTI
+    bus.memory[0x0400] = 0x40; // RTI
+
+    Cpu6510 cpu(bus);
+    cpu.reset();
+
+    uint8_t feedback = 0;
+    uint8_t previous_feedback = 0;
+    int polls = 0;
+    cpu.set_interrupt_poll_callback([&](Cpu6510& polled_cpu) {
+        ++polls;
+        if ((feedback & 0x02) != 0 && (previous_feedback & 0x02) == 0) {
+            polled_cpu.pulse_nmi();
+        }
+        polled_cpu.set_irq_level((feedback & 0x01) != 0);
+        previous_feedback = feedback;
+    });
+
+    feedback = 0x02;
+    require(cpu.step() == StepResult::Ok, "NMI edge is polled before instruction");
+    require(cpu.state().pc == 0x0200, "RTI returns to interrupted PC when NMI handler runs");
+    require(cpu.state().sp == 0xFD, "NMI handler balances stack after RTI");
+    require(polls == 1, "interrupt poll callback is called once per step");
+
+    feedback = 0x02;
+    require(cpu.step() == StepResult::Ok, "held NMI level does not retrigger without a new edge");
+    require(cpu.state().pc == 0x0201, "held NMI level allows main program to continue");
+
+    feedback = 0x01;
+    require(cpu.step() == StepResult::Ok, "CLI executes while IRQ level is active but I was set at boundary");
+    require(cpu.state().pc == 0x0202, "IRQ is not serviced until next instruction boundary after CLI");
+    require((cpu.state().p & FLAG_I) == 0, "CLI clears I");
+
+    require(cpu.step() == StepResult::Ok, "level IRQ is serviced at next boundary");
+    require(cpu.state().pc == 0x0202, "IRQ RTI returns to interrupted PC");
+    require((cpu.state().p & FLAG_I) == 0, "RTI restores pre-IRQ status");
+}
+
 void test_indexed_addressing_modes() {
     RamBus bus;
     bus.set_reset_vector(0x0200);
@@ -903,6 +952,7 @@ int main() {
     test_jsr_and_rts();
     test_brk_and_rti();
     test_interrupt_placeholder_state_and_service();
+    test_interrupt_poll_callback_nmi_edge_and_irq_level();
     test_indexed_addressing_modes();
     test_indirect_addressing_modes();
     test_zero_page_indirect_pointer_wraps();
