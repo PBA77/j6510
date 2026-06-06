@@ -359,8 +359,12 @@ StepResult Cpu6510::step() {
 
 RunResult Cpu6510::run(uint32_t max_instructions) {
     RunResult result{};
+    const bool fast_path = can_use_fast_run_path();
     for (uint32_t i = 0; i < max_instructions; ++i) {
-        const StepResult step_result = step();
+        StepResult step_result = StepResult::Ok;
+        if (!fast_path || !run_fast_instruction(step_result)) {
+            step_result = step();
+        }
         if (step_result != StepResult::Ok) {
             result.result = step_result;
             result.instructions_executed = static_cast<uint32_t>(i + 1);
@@ -502,6 +506,68 @@ void Cpu6510::notify_port_if_changed(uint8_t old_output) {
     const uint8_t new_output = port_output();
     if (port_changed_callback_ && new_output != old_output) {
         port_changed_callback_(new_output);
+    }
+}
+
+bool Cpu6510::can_use_fast_run_path() const {
+    return !interrupt_poll_callback_ && !interrupts_.reset_pending && !interrupts_.nmi_pending && !interrupts_.irq_level;
+}
+
+bool Cpu6510::run_fast_instruction(StepResult& result) {
+    const uint16_t instruction_pc = state_.pc;
+    const uint8_t opcode = read(state_.pc++);
+
+    switch (opcode) {
+    case 0x4C:
+        state_.pc = read16(state_.pc);
+        return true;
+
+    case 0x8D:
+        write(read16(state_.pc), state_.a);
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        return true;
+
+    case 0x8E:
+        write(read16(state_.pc), state_.x);
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        return true;
+
+    case 0xA9:
+        state_.a = read(state_.pc++);
+        set_zn(state_.a);
+        return true;
+
+    case 0xAA:
+        state_.x = state_.a;
+        set_zn(state_.x);
+        return true;
+
+    case 0xAD:
+        state_.a = read(read16(state_.pc));
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        set_zn(state_.a);
+        return true;
+
+    case 0xAE:
+        state_.x = read(read16(state_.pc));
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        set_zn(state_.x);
+        return true;
+
+    case 0xCA:
+        state_.x = static_cast<uint8_t>(state_.x - 1);
+        set_zn(state_.x);
+        return true;
+
+    case 0xE8:
+        state_.x = static_cast<uint8_t>(state_.x + 1);
+        set_zn(state_.x);
+        return true;
+
+    default:
+        state_.pc = instruction_pc;
+        result = StepResult::Ok;
+        return false;
     }
 }
 
