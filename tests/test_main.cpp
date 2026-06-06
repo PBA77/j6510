@@ -1171,6 +1171,43 @@ void test_run_cached_ir_mixed_loop_matches_step() {
     require(cached_cpu.block_cache_stats().hits > 0, "run_cached IR mixed loop records hits");
 }
 
+void test_run_cached_reports_ir_and_fallback_coverage() {
+    RamBus ir_bus;
+    ir_bus.set_reset_vector(0x1400);
+    const uint8_t ir_program[] = {
+        0xA9, 0x7F,       // LDA #$7F
+        0xAA,             // TAX
+        0xE8,             // INX
+        0x4C, 0x00, 0x14, // JMP $1400
+    };
+    ir_bus.load(0x1400, ir_program, sizeof(ir_program));
+    Cpu6510 ir_cpu(ir_bus, Cpu6510Config{false});
+    ir_cpu.reset();
+    require(ir_cpu.run_cached(4).result == StepResult::Ok, "run_cached IR coverage program executes");
+    const BlockCacheStats& ir_stats = ir_cpu.block_cache_stats();
+    require(ir_stats.ir_blocks > 0, "run_cached records IR block");
+    require(ir_stats.ir_instructions == 4, "run_cached records IR instructions");
+    require(ir_stats.fallback_blocks == 0, "run_cached IR program avoids fallback blocks");
+    require(ir_stats.fallback_instructions == 0, "run_cached IR program avoids fallback instructions");
+
+    RamBus fallback_bus;
+    fallback_bus.set_reset_vector(0x1500);
+    const uint8_t fallback_program[] = {
+        0xA9, 0x01,       // LDA #$01
+        0x18,             // CLC, intentionally not in cached IR yet
+        0x4C, 0x00, 0x15, // JMP $1500
+    };
+    fallback_bus.load(0x1500, fallback_program, sizeof(fallback_program));
+    Cpu6510 fallback_cpu(fallback_bus, Cpu6510Config{false});
+    fallback_cpu.reset();
+    require(fallback_cpu.run_cached(3).result == StepResult::Ok, "run_cached fallback coverage program executes");
+    const BlockCacheStats& fallback_stats = fallback_cpu.block_cache_stats();
+    require(fallback_stats.ir_blocks == 0, "run_cached fallback program avoids IR blocks");
+    require(fallback_stats.ir_instructions == 0, "run_cached fallback program avoids IR instructions");
+    require(fallback_stats.fallback_blocks > 0, "run_cached records fallback block");
+    require(fallback_stats.fallback_instructions == 3, "run_cached records fallback instructions");
+}
+
 } // namespace
 
 int main() {
@@ -1206,6 +1243,7 @@ int main() {
     test_run_cached_matches_step_and_tracks_cache_stats();
     test_run_cached_hits_and_invalidates_after_write();
     test_run_cached_ir_mixed_loop_matches_step();
+    test_run_cached_reports_ir_and_fallback_coverage();
 
     std::cout << "All j6510 tests passed\n";
     return 0;

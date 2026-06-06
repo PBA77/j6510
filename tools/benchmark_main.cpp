@@ -187,7 +187,11 @@ void run_cached_benchmark(uint64_t total_instructions, uint64_t total_cycles) {
     print_result("cached", std::chrono::duration<double>(end - start).count(), total_instructions, total_cycles);
     const auto& stats = cpu.block_cache_stats();
     std::cout << "  cache hits/misses/invalidations: "
-              << stats.hits << '/' << stats.misses << '/' << stats.invalidations << '\n';
+              << stats.hits << '/' << stats.misses << '/' << stats.invalidations << '\n'
+              << "  cache ir/fallback blocks: "
+              << stats.ir_blocks << '/' << stats.fallback_blocks << '\n'
+              << "  cache ir/fallback instructions: "
+              << stats.ir_instructions << '/' << stats.fallback_instructions << '\n';
 }
 
 void run_mixed_benchmark(uint64_t iterations, const char* mode) {
@@ -257,7 +261,11 @@ void run_mixed_benchmark(uint64_t iterations, const char* mode) {
     if (std::string(mode) == "cached") {
         const auto& stats = cpu.block_cache_stats();
         std::cout << "  cache hits/misses/invalidations: "
-                  << stats.hits << '/' << stats.misses << '/' << stats.invalidations << '\n';
+                  << stats.hits << '/' << stats.misses << '/' << stats.invalidations << '\n'
+                  << "  cache ir/fallback blocks: "
+                  << stats.ir_blocks << '/' << stats.fallback_blocks << '\n'
+                  << "  cache ir/fallback instructions: "
+                  << stats.ir_instructions << '/' << stats.fallback_instructions << '\n';
     }
 }
 

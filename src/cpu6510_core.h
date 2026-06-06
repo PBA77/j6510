@@ -77,6 +77,10 @@ struct BlockCacheStats {
     uint64_t hits = 0;
     uint64_t misses = 0;
     uint64_t invalidations = 0;
+    uint64_t ir_blocks = 0;
+    uint64_t fallback_blocks = 0;
+    uint64_t ir_instructions = 0;
+    uint64_t fallback_instructions = 0;
 };
 
 class Cpu6510 {

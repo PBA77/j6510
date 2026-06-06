@@ -649,6 +649,8 @@ Cpu6510::CachedBlock Cpu6510::decode_block(uint16_t pc) {
 bool Cpu6510::execute_cached_block(const CachedBlock& block, uint32_t remaining_budget, RunResult& result) {
     const uint32_t to_execute = block.count < remaining_budget ? block.count : remaining_budget;
     if (block.executable && can_use_fast_run_path()) {
+        ++block_cache_stats_.ir_blocks;
+        block_cache_stats_.ir_instructions += to_execute;
         if (can_use_direct_memory_path()) {
             execute_cached_block_direct(block, to_execute, result);
         } else {
@@ -661,6 +663,8 @@ bool Cpu6510::execute_cached_block(const CachedBlock& block, uint32_t remaining_
         return true;
     }
 
+    ++block_cache_stats_.fallback_blocks;
+    block_cache_stats_.fallback_instructions += to_execute;
     for (uint32_t i = 0; i < to_execute; ++i) {
         StepResult step_result = StepResult::Ok;
         const uint16_t pc_before = state_.pc;
