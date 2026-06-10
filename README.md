@@ -158,14 +158,14 @@ reference instruction path. You can pass an iteration count:
 ./build-release/j6510_benchmark profile 100000
 ```
 
-Current local Release sample after the ESP32-oriented fast-path pass, measured
-on an Apple M1 Max:
+Current local Release sample after the cached-pair fusion pass, measured on an
+Apple M1 Max:
 
 | Suite | Iterations | Instructions | Nominal 6502 cycles | `step` | `run` | `run_block` | `run_cached` |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `both` | 5,000,000 | 45,000,000 | 135,000,000 | 438 MHz | 637 MHz | 451 MHz | 1,364 MHz |
-| `mixed` | 2,000,000 | 60,000,000 | 202,000,000 | 497 MHz | 714 MHz | 492 MHz | 1,405 MHz |
-| `realish` | 50,000 | 14,600,000 | 43,650,000 | 346 MHz | 418 MHz | 322 MHz | 928 MHz |
+| `both` | 5,000,000 | 45,000,000 | 135,000,000 | 440 MHz | 643 MHz | 452 MHz | 1,413 MHz |
+| `mixed` | 2,000,000 | 60,000,000 | 202,000,000 | 496 MHz | 725 MHz | 503 MHz | 1,455 MHz |
+| `realish` | 50,000 | 14,600,000 | 43,650,000 | 421 MHz | 436 MHz | 331 MHz | 1,243 MHz |
 
 Cached-block coverage for that sample:
 
@@ -176,16 +176,16 @@ Cached-block coverage for that sample:
 | `realish` | 3,249,996 / 4 / 0 | 14,600,000 / 0 |
 
 ESP32-S2 USB benchmark on an `esp32-s2-saola-1` connected as
-`/dev/cu.usbserial-210`:
+`/dev/cu.usbserial-110`:
 
 | Suite | Mode | Baseline build | Fast build | Improvement |
 | --- | --- | ---: | ---: | ---: |
 | `basic` | `run` | 3.25 MHz | 4.89 MHz | +50% |
-| `basic` | `run_cached` | 6.17 MHz | 9.29 MHz | +51% |
+| `basic` | `run_cached` | 5.83 MHz | 8.26 MHz | +42% |
 | `mixed` | `run` | 3.18 MHz | 4.71 MHz | +48% |
-| `mixed` | `run_cached` | 4.92 MHz | 7.35 MHz | +49% |
-| `realish` | `run` | 2.38 MHz | 3.28 MHz | +38% |
-| `realish` | `run_cached` | 4.29 MHz | 6.20 MHz | +45% |
+| `mixed` | `run_cached` | 5.36 MHz | 7.83 MHz | +46% |
+| `realish` | `run` | 2.38 MHz | 3.22 MHz | +35% |
+| `realish` | `run_cached` | 5.08 MHz | 7.15 MHz | +41% |
 
 The baseline build used cache statistics and allocated the 64 KB `RamBus` in
 PSRAM on that board. The fast build disabled cache statistics, marked the hot
@@ -199,15 +199,18 @@ and blocks with static writes to their own code page do not use the executable
 payload. Direct 64 KB RAM buses use a faster read/write path, including the
 default 6510 profile; accesses to `$0000/$0001` keep the normal 6510 port
 semantics while other addresses use the direct RAM pointer. Executable cached
-blocks use a tight direct-memory loop with local CPU registers. The `realish`
-diagnostic now stays fully in IR after adding the previously dominant `ADC #`,
-`CMP #`, and `INC zp` cached operations. The `profile` benchmark mode runs the
-`realish` cached workload and prints the cache histogram when
-`J6510_ENABLE_CACHE_STATS` is enabled.
+blocks use a tight direct-memory loop with local CPU registers. During decode,
+selected adjacent branch pairs such as `DEX`/`BPL`, `DEY`/`BNE`, and
+`CMP #`/`BCC` are fused so the hot loop can execute both instructions with one
+dispatch when the caller's instruction budget includes the pair. The `realish`
+diagnostic stays fully in IR with fused compare/decrement branches on its inner
+loop. The `profile` benchmark mode runs the `realish` cached workload and prints
+the cache histogram when `J6510_ENABLE_CACHE_STATS` is enabled.
 
-Current decision: the easy cached-IR wins are mostly consumed. Further widening
-should wait for a real workload histogram or for a deliberate larger design such
-as partial fallback inside executable blocks.
+Current decision: the easy cached-IR opcode wins are mostly consumed. Further
+widening should wait for a real workload histogram; the next larger design
+target would be more structured cached-block specialization rather than adding
+one-off opcodes.
 
 ## External CPU Test Suites
 

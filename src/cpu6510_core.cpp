@@ -31,6 +31,18 @@ int8_t branch_offset(uint16_t operand) {
     return static_cast<int8_t>(operand >> 8);
 }
 
+uint16_t make_cmp_imm_branch_operand(uint8_t value, uint16_t branch_operand) {
+    return static_cast<uint16_t>((branch_operand & 0xFF00) | value);
+}
+
+uint8_t cmp_imm_branch_value(uint16_t operand) {
+    return static_cast<uint8_t>(operand);
+}
+
+int8_t cmp_imm_branch_offset(uint16_t operand) {
+    return static_cast<int8_t>(operand >> 8);
+}
+
 uint8_t with_flag(uint8_t p, uint8_t flag, bool enabled) {
     if (enabled) {
         return static_cast<uint8_t>(p | flag | FLAG_U);
@@ -845,6 +857,7 @@ Cpu6510::CachedBlock Cpu6510::decode_block(uint16_t pc) {
             block.page_end = static_cast<uint8_t>(last_byte >> 8);
             block.terminator = RunStopReason::ControlFlow;
             ++block.count;
+            fuse_cached_pairs(block);
             disable_ir_for_unsafe_writes();
             return block;
         }
@@ -855,13 +868,55 @@ Cpu6510::CachedBlock Cpu6510::decode_block(uint16_t pc) {
 
     block.page_end = static_cast<uint8_t>(static_cast<uint16_t>(cursor - 1) >> 8);
     block.terminator = RunStopReason::BudgetExhausted;
+    fuse_cached_pairs(block);
     disable_ir_for_unsafe_writes();
     return block;
 }
 
+void Cpu6510::fuse_cached_pairs(CachedBlock& block) const {
+    if (!block.executable || direct_memory_ == nullptr) {
+        return;
+    }
+
+    for (uint8_t i = 0; i + 1 < block.count; ++i) {
+        CachedOp& op = block.ops[i];
+        CachedOp& next = block.ops[static_cast<uint8_t>(i + 1)];
+        if (next.kind == CachedOpKind::FusedSkip) {
+            continue;
+        }
+
+        if (op.kind == CachedOpKind::Dex && next.kind == CachedOpKind::BranchClear &&
+            branch_flag(next.operand) == FLAG_N) {
+            op = CachedOp{CachedOpKind::DexBranchClearN, next.operand};
+            next = CachedOp{CachedOpKind::FusedSkip, 0};
+            ++i;
+            continue;
+        }
+
+        if (op.kind == CachedOpKind::Dey &&
+            (next.kind == CachedOpKind::BranchSet || next.kind == CachedOpKind::BranchClear) &&
+            (branch_flag(next.operand) == FLAG_Z || branch_flag(next.operand) == FLAG_N)) {
+            op = CachedOp{next.kind == CachedOpKind::BranchSet ? CachedOpKind::DeyBranchSet
+                                                               : CachedOpKind::DeyBranchClear,
+                          next.operand};
+            next = CachedOp{CachedOpKind::FusedSkip, 0};
+            ++i;
+            continue;
+        }
+
+        if (op.kind == CachedOpKind::CmpImm && next.kind == CachedOpKind::BranchClear &&
+            branch_flag(next.operand) == FLAG_C) {
+            op = CachedOp{CachedOpKind::CmpImmBranchClearC,
+                          make_cmp_imm_branch_operand(static_cast<uint8_t>(op.operand), next.operand)};
+            next = CachedOp{CachedOpKind::FusedSkip, 0};
+            ++i;
+        }
+    }
+}
+
 J6510_FAST_CODE_ATTR bool Cpu6510::execute_cached_block(const CachedBlock& block, uint32_t remaining_budget, RunResult& result) {
     const uint32_t to_execute = block.count < remaining_budget ? block.count : remaining_budget;
-    if (block.executable && can_use_fast_run_path()) {
+    if (block.executable) {
         J6510_CACHE_STATS(++block_cache_stats_.ir_blocks);
         J6510_CACHE_STATS(block_cache_stats_.ir_instructions += to_execute);
         if (can_use_direct_memory_path()) {
@@ -1095,11 +1150,13 @@ bool Cpu6510::is_hot_cached_op(CachedOpKind kind) const {
     case CachedOpKind::LdaAbs:
     case CachedOpKind::LdxAbs:
     case CachedOpKind::LdaZpX:
+    case CachedOpKind::LdaAbsX:
     case CachedOpKind::LdaAbsY:
     case CachedOpKind::StaAbs:
     case CachedOpKind::StxAbs:
     case CachedOpKind::StaZp:
     case CachedOpKind::StaZpX:
+    case CachedOpKind::StaAbsX:
     case CachedOpKind::StaAbsY:
     case CachedOpKind::Tax:
     case CachedOpKind::Txa:
@@ -1111,6 +1168,11 @@ bool Cpu6510::is_hot_cached_op(CachedOpKind kind) const {
     case CachedOpKind::FlagClear:
     case CachedOpKind::BranchSet:
     case CachedOpKind::BranchClear:
+    case CachedOpKind::FusedSkip:
+    case CachedOpKind::DexBranchClearN:
+    case CachedOpKind::DeyBranchSet:
+    case CachedOpKind::DeyBranchClear:
+    case CachedOpKind::CmpImmBranchClearC:
     case CachedOpKind::JmpAbs:
     case CachedOpKind::AdcImm:
     case CachedOpKind::CmpImm:
@@ -1354,6 +1416,43 @@ void Cpu6510::execute_cached_op(const CachedOp& op) {
             state_.pc = static_cast<uint16_t>(state_.pc + branch_offset(op.operand));
         }
         return;
+    case CachedOpKind::FusedSkip:
+        return;
+    case CachedOpKind::DexBranchClearN:
+        state_.x = static_cast<uint8_t>(state_.x - 1);
+        state_.pc = static_cast<uint16_t>(state_.pc + 1);
+        set_zn(state_.x);
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        if ((state_.p & FLAG_N) == 0) {
+            state_.pc = static_cast<uint16_t>(state_.pc + branch_offset(op.operand));
+        }
+        return;
+    case CachedOpKind::DeyBranchSet:
+        state_.y = static_cast<uint8_t>(state_.y - 1);
+        state_.pc = static_cast<uint16_t>(state_.pc + 1);
+        set_zn(state_.y);
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        if ((state_.p & branch_flag(op.operand)) != 0) {
+            state_.pc = static_cast<uint16_t>(state_.pc + branch_offset(op.operand));
+        }
+        return;
+    case CachedOpKind::DeyBranchClear:
+        state_.y = static_cast<uint8_t>(state_.y - 1);
+        state_.pc = static_cast<uint16_t>(state_.pc + 1);
+        set_zn(state_.y);
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        if ((state_.p & branch_flag(op.operand)) == 0) {
+            state_.pc = static_cast<uint16_t>(state_.pc + branch_offset(op.operand));
+        }
+        return;
+    case CachedOpKind::CmpImmBranchClearC:
+        compare(state_.a, cmp_imm_branch_value(op.operand));
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        if ((state_.p & FLAG_C) == 0) {
+            state_.pc = static_cast<uint16_t>(state_.pc + cmp_imm_branch_offset(op.operand));
+        }
+        return;
     case CachedOpKind::JmpAbs:
         state_.pc = op.operand;
         return;
@@ -1452,6 +1551,11 @@ J6510_FAST_CODE_ATTR void Cpu6510::execute_cached_block_direct_hot(const CachedB
             pc = static_cast<uint16_t>(pc + 3);
             set_zn_local(a);
             break;
+        case CachedOpKind::LdaAbsX:
+            a = read_direct(static_cast<uint16_t>(op.operand + x));
+            pc = static_cast<uint16_t>(pc + 3);
+            set_zn_local(a);
+            break;
         case CachedOpKind::StaAbs:
             write_direct(op.operand, a);
             pc = static_cast<uint16_t>(pc + 3);
@@ -1467,6 +1571,10 @@ J6510_FAST_CODE_ATTR void Cpu6510::execute_cached_block_direct_hot(const CachedB
         case CachedOpKind::StaZpX:
             write_direct(static_cast<uint8_t>(op.operand + x), a);
             pc = static_cast<uint16_t>(pc + 2);
+            break;
+        case CachedOpKind::StaAbsX:
+            write_direct(static_cast<uint16_t>(op.operand + x), a);
+            pc = static_cast<uint16_t>(pc + 3);
             break;
         case CachedOpKind::StaAbsY:
             write_direct(static_cast<uint16_t>(op.operand + y), a);
@@ -1518,6 +1626,55 @@ J6510_FAST_CODE_ATTR void Cpu6510::execute_cached_block_direct_hot(const CachedB
             pc = static_cast<uint16_t>(pc + 2);
             if ((p & branch_flag(op.operand)) == 0) {
                 pc = static_cast<uint16_t>(pc + branch_offset(op.operand));
+            }
+            break;
+        case CachedOpKind::FusedSkip:
+            break;
+        case CachedOpKind::DexBranchClearN:
+            x = static_cast<uint8_t>(x - 1);
+            pc = static_cast<uint16_t>(pc + 1);
+            set_zn_local(x);
+            if (i + 1 < to_execute) {
+                pc = static_cast<uint16_t>(pc + 2);
+                if ((p & FLAG_N) == 0) {
+                    pc = static_cast<uint16_t>(pc + branch_offset(op.operand));
+                }
+                ++i;
+            }
+            break;
+        case CachedOpKind::DeyBranchSet:
+            y = static_cast<uint8_t>(y - 1);
+            pc = static_cast<uint16_t>(pc + 1);
+            set_zn_local(y);
+            if (i + 1 < to_execute) {
+                pc = static_cast<uint16_t>(pc + 2);
+                if ((p & branch_flag(op.operand)) != 0) {
+                    pc = static_cast<uint16_t>(pc + branch_offset(op.operand));
+                }
+                ++i;
+            }
+            break;
+        case CachedOpKind::DeyBranchClear:
+            y = static_cast<uint8_t>(y - 1);
+            pc = static_cast<uint16_t>(pc + 1);
+            set_zn_local(y);
+            if (i + 1 < to_execute) {
+                pc = static_cast<uint16_t>(pc + 2);
+                if ((p & branch_flag(op.operand)) == 0) {
+                    pc = static_cast<uint16_t>(pc + branch_offset(op.operand));
+                }
+                ++i;
+            }
+            break;
+        case CachedOpKind::CmpImmBranchClearC:
+            p = compare_flags(p, a, cmp_imm_branch_value(op.operand));
+            pc = static_cast<uint16_t>(pc + 2);
+            if (i + 1 < to_execute) {
+                pc = static_cast<uint16_t>(pc + 2);
+                if ((p & FLAG_C) == 0) {
+                    pc = static_cast<uint16_t>(pc + cmp_imm_branch_offset(op.operand));
+                }
+                ++i;
             }
             break;
         case CachedOpKind::JmpAbs:
@@ -1778,6 +1935,55 @@ J6510_FAST_CODE_ATTR void Cpu6510::execute_cached_block_direct(const CachedBlock
             pc = static_cast<uint16_t>(pc + 2);
             if ((p & branch_flag(op.operand)) == 0) {
                 pc = static_cast<uint16_t>(pc + branch_offset(op.operand));
+            }
+            break;
+        case CachedOpKind::FusedSkip:
+            break;
+        case CachedOpKind::DexBranchClearN:
+            x = static_cast<uint8_t>(x - 1);
+            pc = static_cast<uint16_t>(pc + 1);
+            set_zn_local(x);
+            if (i + 1 < to_execute) {
+                pc = static_cast<uint16_t>(pc + 2);
+                if ((p & FLAG_N) == 0) {
+                    pc = static_cast<uint16_t>(pc + branch_offset(op.operand));
+                }
+                ++i;
+            }
+            break;
+        case CachedOpKind::DeyBranchSet:
+            y = static_cast<uint8_t>(y - 1);
+            pc = static_cast<uint16_t>(pc + 1);
+            set_zn_local(y);
+            if (i + 1 < to_execute) {
+                pc = static_cast<uint16_t>(pc + 2);
+                if ((p & branch_flag(op.operand)) != 0) {
+                    pc = static_cast<uint16_t>(pc + branch_offset(op.operand));
+                }
+                ++i;
+            }
+            break;
+        case CachedOpKind::DeyBranchClear:
+            y = static_cast<uint8_t>(y - 1);
+            pc = static_cast<uint16_t>(pc + 1);
+            set_zn_local(y);
+            if (i + 1 < to_execute) {
+                pc = static_cast<uint16_t>(pc + 2);
+                if ((p & branch_flag(op.operand)) == 0) {
+                    pc = static_cast<uint16_t>(pc + branch_offset(op.operand));
+                }
+                ++i;
+            }
+            break;
+        case CachedOpKind::CmpImmBranchClearC:
+            p = compare_flags(p, a, cmp_imm_branch_value(op.operand));
+            pc = static_cast<uint16_t>(pc + 2);
+            if (i + 1 < to_execute) {
+                pc = static_cast<uint16_t>(pc + 2);
+                if ((p & FLAG_C) == 0) {
+                    pc = static_cast<uint16_t>(pc + cmp_imm_branch_offset(op.operand));
+                }
+                ++i;
             }
             break;
         case CachedOpKind::JmpAbs:

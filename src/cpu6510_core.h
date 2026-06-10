@@ -225,6 +225,11 @@ private:
         FlagClear,
         BranchSet,
         BranchClear,
+        FusedSkip,
+        DexBranchClearN,
+        DeyBranchSet,
+        DeyBranchClear,
+        CmpImmBranchClearC,
         JmpAbs,
         AdcImm,
         CmpImm,
@@ -266,6 +271,7 @@ private:
     bool block_uses_page(const CachedBlock& block, uint8_t page) const;
     CachedBlock& block_cache_slot(uint16_t pc);
     CachedBlock decode_block(uint16_t pc);
+    void fuse_cached_pairs(CachedBlock& block) const;
     J6510_FAST_CODE_ATTR bool execute_cached_block(const CachedBlock& block, uint32_t remaining_budget, RunResult& result);
     bool decode_cached_op(uint8_t opcode, uint16_t operand, CachedOp& op) const;
     bool is_hot_cached_op(CachedOpKind kind) const;

@@ -1606,6 +1606,67 @@ void test_run_cached_ir_adc_cmp_inc_match_step() {
 #endif
 }
 
+void test_run_cached_fused_pairs_respect_budget_cuts() {
+    const auto require_cached_matches_step = [](const uint8_t* program, uint16_t size, int first_budget,
+                                                int second_budget, const std::string& context) {
+        RamBus step_bus;
+        RamBus cached_bus;
+        step_bus.set_reset_vector(0x1C00);
+        cached_bus.set_reset_vector(0x1C00);
+        step_bus.load(0x1C00, program, size);
+        cached_bus.load(0x1C00, program, size);
+        Cpu6510 step_cpu(step_bus, Cpu6510Config{false});
+        Cpu6510 cached_cpu(cached_bus, Cpu6510Config{false});
+        step_cpu.reset();
+        cached_cpu.reset();
+
+        run_steps(step_cpu, first_budget, context + " first reference");
+        const RunResult first = cached_cpu.run_cached(static_cast<uint32_t>(first_budget));
+        require(first.result == StepResult::Ok, context + " first run_cached returns Ok");
+        require(first.instructions_executed == static_cast<uint32_t>(first_budget),
+                context + " first run_cached reports budget");
+        require_same_state(step_cpu.state(), cached_cpu.state(), context + " first budget cut");
+
+        run_steps(step_cpu, second_budget, context + " second reference");
+        const RunResult second = cached_cpu.run_cached(static_cast<uint32_t>(second_budget));
+        require(second.result == StepResult::Ok, context + " second run_cached returns Ok");
+        require(second.instructions_executed == static_cast<uint32_t>(second_budget),
+                context + " second run_cached reports budget");
+        require_same_state(step_cpu.state(), cached_cpu.state(), context + " resumed branch");
+        require(step_bus.memory == cached_bus.memory, context + " memory");
+    };
+
+    const uint8_t dex_bpl_program[] = {
+        0xA2, 0x01,       // LDX #$01
+        0xCA,             // DEX
+        0x10, 0x02,       // BPL $1C07
+        0xA9, 0xFF,       // skipped after resumed branch
+        0xA9, 0x42,       // branch target
+        0x4C, 0x00, 0x1C, // JMP $1C00
+    };
+    require_cached_matches_step(dex_bpl_program, sizeof(dex_bpl_program), 2, 1, "fused DEX/BPL");
+
+    const uint8_t dey_bne_program[] = {
+        0xA0, 0x02,       // LDY #$02
+        0x88,             // DEY
+        0xD0, 0x02,       // BNE $1C07
+        0xA9, 0xFF,       // skipped after resumed branch
+        0xA9, 0x24,       // branch target
+        0x4C, 0x00, 0x1C, // JMP $1C00
+    };
+    require_cached_matches_step(dey_bne_program, sizeof(dey_bne_program), 2, 1, "fused DEY/BNE");
+
+    const uint8_t cmp_bcc_program[] = {
+        0xA9, 0x10,       // LDA #$10
+        0xC9, 0x20,       // CMP #$20
+        0x90, 0x02,       // BCC $1C08
+        0xA9, 0xFF,       // skipped after resumed branch
+        0xA9, 0x11,       // branch target
+        0x4C, 0x00, 0x1C, // JMP $1C00
+    };
+    require_cached_matches_step(cmp_bcc_program, sizeof(cmp_bcc_program), 2, 1, "fused CMP/BCC");
+}
+
 void test_run_cached_realish_stress_matches_step() {
     RamBus step_bus;
     RamBus cached_bus;
@@ -1989,6 +2050,7 @@ int main() {
     test_run_cached_ir_load_store_transfer_matches_step();
     test_run_cached_ir_indexed_loads_match_step();
     test_run_cached_ir_adc_cmp_inc_match_step();
+    test_run_cached_fused_pairs_respect_budget_cuts();
     test_run_cached_realish_stress_matches_step();
     test_undocumented_run_paths_match_step();
 #endif
