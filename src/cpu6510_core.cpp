@@ -581,13 +581,13 @@ J6510_FAST_CODE_ATTR RunResult Cpu6510::run_cached(uint32_t max_instructions) {
 #if J6510_ENABLE_BLOCK_CACHE
     RunResult result{};
     while (result.instructions_executed < max_instructions) {
-        if (has_pending_interrupt_work()) {
+        if (J6510_UNLIKELY(has_pending_interrupt_work())) {
             result.stop_pc = state_.pc;
             return result;
         }
 
         CachedBlock& slot = block_cache_slot(state_.pc);
-        if (!slot.valid || slot.start_pc != state_.pc) {
+        if (J6510_UNLIKELY(!slot.valid || slot.start_pc != state_.pc)) {
             if (slot.valid) {
                 remove_block_from_page_counts(slot);
                 --valid_cached_blocks_;
@@ -916,11 +916,11 @@ void Cpu6510::fuse_cached_pairs(CachedBlock& block) const {
 
 J6510_FAST_CODE_ATTR bool Cpu6510::execute_cached_block(const CachedBlock& block, uint32_t remaining_budget, RunResult& result) {
     const uint32_t to_execute = block.count < remaining_budget ? block.count : remaining_budget;
-    if (block.executable) {
+    if (J6510_LIKELY(block.executable)) {
         J6510_CACHE_STATS(++block_cache_stats_.ir_blocks);
         J6510_CACHE_STATS(block_cache_stats_.ir_instructions += to_execute);
-        if (can_use_direct_memory_path()) {
-            if (block.hot_executable) {
+        if (J6510_LIKELY(can_use_direct_memory_path())) {
+            if (J6510_LIKELY(block.hot_executable)) {
                 execute_cached_block_direct_hot(block, to_execute, result);
             } else {
                 execute_cached_block_direct(block, to_execute, result);

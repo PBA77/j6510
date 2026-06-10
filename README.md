@@ -158,14 +158,14 @@ reference instruction path. You can pass an iteration count:
 ./build-release/j6510_benchmark profile 100000
 ```
 
-Current local Release sample after the cached-pair fusion pass, measured on an
-Apple M1 Max:
+Current local Release sample after the cached-pair fusion pass and cached hot
+path branch-prediction hints, measured on an Apple M1 Max:
 
 | Suite | Iterations | Instructions | Nominal 6502 cycles | `step` | `run` | `run_block` | `run_cached` |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `both` | 5,000,000 | 45,000,000 | 135,000,000 | 440 MHz | 643 MHz | 452 MHz | 1,413 MHz |
-| `mixed` | 2,000,000 | 60,000,000 | 202,000,000 | 496 MHz | 725 MHz | 503 MHz | 1,455 MHz |
-| `realish` | 50,000 | 14,600,000 | 43,650,000 | 421 MHz | 436 MHz | 331 MHz | 1,243 MHz |
+| `both` | 5,000,000 | 45,000,000 | 135,000,000 | 440 MHz | 643 MHz | 452 MHz | 1,424 MHz |
+| `mixed` | 2,000,000 | 60,000,000 | 202,000,000 | 496 MHz | 725 MHz | 503 MHz | 1,533 MHz |
+| `realish` | 50,000 | 14,600,000 | 43,650,000 | 421 MHz | 436 MHz | 331 MHz | 1,313 MHz |
 
 Cached-block coverage for that sample:
 
@@ -204,8 +204,10 @@ selected adjacent branch pairs such as `DEX`/`BPL`, `DEY`/`BNE`, and
 `CMP #`/`BCC` are fused so the hot loop can execute both instructions with one
 dispatch when the caller's instruction budget includes the pair. The `realish`
 diagnostic stays fully in IR with fused compare/decrement branches on its inner
-loop. The `profile` benchmark mode runs the `realish` cached workload and prints
-the cache histogram when `J6510_ENABLE_CACHE_STATS` is enabled.
+loop. The cached dispatcher marks hot hits and executable direct-memory blocks
+as the likely path so branch prediction does not overpay for cold misses and
+fallback cases. The `profile` benchmark mode runs the `realish` cached workload
+and prints the cache histogram when `J6510_ENABLE_CACHE_STATS` is enabled.
 
 Current decision: the easy cached-IR opcode wins are mostly consumed. Further
 widening should wait for a real workload histogram; the next larger design

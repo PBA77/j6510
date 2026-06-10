@@ -28,8 +28,10 @@
 #endif
 
 #if defined(__GNUC__) || defined(__clang__)
+#define J6510_LIKELY(x) __builtin_expect(!!(x), 1)
 #define J6510_UNLIKELY(x) __builtin_expect(!!(x), 0)
 #else
+#define J6510_LIKELY(x) (x)
 #define J6510_UNLIKELY(x) (x)
 #endif
 
