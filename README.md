@@ -126,6 +126,31 @@ in PSRAM when PSRAM is present.
 This is not a full C64 target. It does not include VIC-II, SID, CIA, keyboard,
 video, storage, or real host interrupt wiring.
 
+## Microsoft BASIC Host Demo
+
+`msbasic_demo` runs the OSI Microsoft BASIC ROM from
+`examples/j6510_basic_demo/msbasic_osi_rom.h` on the host, using the same
+machine model as the ESP32-S2 sketch: ROM at `$A000` (write-protected, cold
+start `$BD11`), serial output at `$D001`, serial status/input at `$D002/$D003`,
+and monitor trampolines at `$FFEB/$FFEE/$FFF1`. stdin/stdout play the serial
+console, so it works both scripted and interactively:
+
+```sh
+cmake --build build-release --target msbasic_demo
+./build-release/msbasic_demo                              # default FOR/NEXT benchmark
+./build-release/msbasic_demo 20000000 "10 PRINT 2+2"      # custom program
+./build-release/msbasic_demo                              # then type lines at the OK prompt
+```
+
+The default program sums 1..50000 and prints the result. Statistics go to
+stderr: on an Android ARM64 phone the interpreter loop runs at ~34 M instr/s
+with ~99% of executed instructions in cached IR. This bus cannot expose
+`direct_memory()` because the serial registers are memory-mapped, so cached
+execution goes through the bus IR path (per-op `read()`/`write()`) instead of
+the direct-memory loop — RAM-only buses are roughly 3-4x faster on the same
+code. The demo also runs as a `ctest` smoke test that checks the program
+reaches its final `DONE` marker.
+
 ## Benchmark
 
 ```sh
@@ -216,14 +241,13 @@ interleaved old/new runs, best-of-6, to bound the thermal governor variance):
 | before the cached-block speedups (commit `4a316d9`) | 1.4% | 23-45 M instr/s |
 | current | 99.998% | 97-145 M instr/s |
 
-The remaining fallback is the handful of blocks containing `BRK` or
-`JMP (ind)` (528 of 31.0M instructions here); both stay in the reference
-interpreter by design. Self-modifying regions of the test invalidate and
+The remaining fallback is the handful of blocks containing `BRK` (510 of
+31.0M instructions here); it stays in the reference interpreter by design. Self-modifying regions of the test invalidate and
 re-decode blocks on the fly (~0.3M invalidations in this run).
 
 `run_cached()` now uses a small executable cached payload for selected hot
 documented opcodes and falls back to the reference interpreter path for the rest.
-The cached IR covers every documented opcode except `BRK` and `JMP (ind)`:
+The cached IR covers every documented opcode except `BRK`:
 loads/stores, the full ALU set in all addressing modes, accumulator and memory
 shifts/rotates, stack operations, `BIT`, `INC`/`DEC`, `JSR`/`RTS`/`RTI`, and
 both indirect modes. `STA (zp,X)` and `STA (zp),Y` check the computed target
@@ -248,9 +272,9 @@ as the likely path so branch prediction does not overpay for cold misses and
 fallback cases. The `profile` benchmark mode runs the `realish` cached workload
 and prints the cache histogram when `J6510_ENABLE_CACHE_STATS` is enabled.
 
-Current decision: cached IR covers every documented opcode except `BRK` and
-`JMP (ind)`, and `run_cached` chains consecutive cached blocks instead of
-re-looking them up. The undocumented families, cycle accounting in the cached
+Current decision: cached IR covers every documented opcode except `BRK`,
+including the NMOS `JMP ($xxFF)` indirect-jump bug behavior, and `run_cached`
+chains consecutive cached blocks instead of re-looking them up. The undocumented families, cycle accounting in the cached
 path, and any further specialization should wait for a real workload histogram.
 
 ## External CPU Test Suites

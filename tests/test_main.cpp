@@ -4,6 +4,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -1398,9 +1399,10 @@ void test_run_cached_reports_ir_and_fallback_coverage() {
 
     RamBus fallback_bus;
     fallback_bus.set_reset_vector(0x1500);
+    fallback_bus.set_irq_brk_vector(0x1500);
     const uint8_t fallback_program[] = {
         0xA9, 0x01,       // LDA #$01
-        0x6C, 0x00, 0x15, // JMP ($1500), intentionally not in cached IR yet
+        0x00,             // BRK, intentionally not in cached IR yet
         0x4C, 0x00, 0x15, // JMP $1500
     };
     fallback_bus.load(0x1500, fallback_program, sizeof(fallback_program));
@@ -1412,8 +1414,8 @@ void test_run_cached_reports_ir_and_fallback_coverage() {
     require(fallback_stats.ir_instructions == 0, "run_cached fallback program avoids IR instructions");
     require(fallback_stats.fallback_blocks > 0, "run_cached records fallback block");
     require(fallback_stats.fallback_instructions == 3, "run_cached records fallback instructions");
-    require(fallback_stats.fallback_opcodes[0x6C] == 1, "run_cached records fallback opcode histogram");
-    require(fallback_stats.unsupported_fallback_opcodes[0x6C] == 1, "run_cached records unsupported fallback opcode histogram");
+    require(fallback_stats.fallback_opcodes[0x00] == 1, "run_cached records fallback opcode histogram");
+    require(fallback_stats.unsupported_fallback_opcodes[0x00] == 1, "run_cached records unsupported fallback opcode histogram");
 #endif
 }
 
@@ -2004,6 +2006,98 @@ void test_cycle_exact_bus_sequence_for_rmw_and_branch() {
 
 } // namespace
 
+#if J6510_ENABLE_BLOCK_CACHE
+namespace {
+
+void test_run_cached_differential_fuzz() {
+    // Straight-line random programs built from the cached-IR opcode pool,
+    // executed K instructions via step() (reference) and run_cached(). Final
+    // registers and the full 64 KB of RAM must match exactly.
+    static const struct {
+        uint8_t op;
+        uint8_t len;
+        uint8_t kind; // 0=imm 1=zp 2=zp indexed 3=abs 4=abs indexed 5=implied 6=indirect zp
+    } pool[] = {
+        {0xA9,2,0},{0xA2,2,0},{0xA0,2,0},{0x69,2,0},{0xE9,2,0},{0xC9,2,0},{0xE0,2,0},{0xC0,2,0},
+        {0x09,2,0},{0x29,2,0},{0x49,2,0},
+        {0xA5,2,1},{0xA6,2,1},{0xA4,2,1},{0x85,2,1},{0x86,2,1},{0x84,2,1},{0x65,2,1},{0xE5,2,1},
+        {0xC5,2,1},{0xE4,2,1},{0xC4,2,1},{0x05,2,1},{0x25,2,1},{0x45,2,1},{0x24,2,1},{0xE6,2,1},
+        {0xC6,2,1},{0x06,2,1},{0x46,2,1},{0x26,2,1},{0x66,2,1},
+        {0xB5,2,2},{0x95,2,2},{0xF6,2,2},{0xD6,2,2},{0x94,2,2},{0x96,2,2},{0xB4,2,2},{0xB6,2,2},
+        {0x15,2,2},{0x35,2,2},{0x55,2,2},{0x75,2,2},{0xF5,2,2},{0xD5,2,2},
+        {0x16,2,2},{0x56,2,2},{0x36,2,2},{0x76,2,2},
+        {0xAD,3,3},{0xAE,3,3},{0xAC,3,3},{0x8D,3,3},{0x8E,3,3},{0x8C,3,3},{0x6D,3,3},{0xED,3,3},
+        {0xCD,3,3},{0xEC,3,3},{0xCC,3,3},{0x0D,3,3},{0x2D,3,3},{0x4D,3,3},{0x2C,3,3},{0xEE,3,3},
+        {0xCE,3,3},{0x0E,3,3},{0x4E,3,3},{0x2E,3,3},{0x6E,3,3},
+        {0xBD,3,4},{0xB9,3,4},{0x9D,3,4},{0x99,3,4},{0xBE,3,4},{0xBC,3,4},
+        {0x1D,3,4},{0x3D,3,4},{0x5D,3,4},{0x7D,3,4},{0xFD,3,4},{0xDD,3,4},{0xFE,3,4},{0xDE,3,4},
+        {0x19,3,4},{0x39,3,4},{0x59,3,4},{0x79,3,4},{0xF9,3,4},{0xD9,3,4},
+        {0xAA,1,5},{0xA8,1,5},{0x8A,1,5},{0x98,1,5},{0xBA,1,5},{0x9A,1,5},{0xE8,1,5},{0xC8,1,5},
+        {0xCA,1,5},{0x88,1,5},{0x0A,1,5},{0x4A,1,5},{0x2A,1,5},{0x6A,1,5},{0x48,1,5},{0x08,1,5},
+        {0x68,1,5},{0x28,1,5},{0x18,1,5},{0x38,1,5},{0x58,1,5},{0x78,1,5},{0xB8,1,5},{0xD8,1,5},
+        {0xF8,1,5},{0xEA,1,5},
+        {0xA1,2,6},{0xB1,2,6},{0x81,2,6},{0x91,2,6},
+        {0x01,2,6},{0x21,2,6},{0x41,2,6},{0x61,2,6},{0xE1,2,6},{0xC1,2,6},
+        {0x11,2,6},{0x31,2,6},{0x51,2,6},{0x71,2,6},{0xF1,2,6},{0xD1,2,6},
+    };
+
+    constexpr int kInstructions = 200;
+    constexpr uint32_t kSeeds = 400;
+    for (uint32_t seed = 1; seed <= kSeeds; ++seed) {
+        std::mt19937 rng(seed);
+        std::vector<uint8_t> program;
+        program.reserve(kInstructions * 3);
+        int generated = 0;
+        while (generated < kInstructions) {
+            const auto& entry = pool[rng() % (sizeof(pool) / sizeof(pool[0]))];
+            program.push_back(entry.op);
+            if (entry.len >= 2) {
+                program.push_back(static_cast<uint8_t>(rng()));
+            }
+            if (entry.len == 3) {
+                program.push_back(static_cast<uint8_t>(0x30 + (rng() % 2))); // $30xx/$31xx
+            }
+            ++generated;
+        }
+
+        RamBus step_bus;
+        RamBus cached_bus;
+        step_bus.set_reset_vector(0x0200);
+        cached_bus.set_reset_vector(0x0200);
+        step_bus.load(0x0200, program.data(), static_cast<uint16_t>(program.size()));
+        cached_bus.load(0x0200, program.data(), static_cast<uint16_t>(program.size()));
+
+        Cpu6510 reference(step_bus);
+        reference.reset();
+        bool reference_ok = true;
+        for (int i = 0; i < kInstructions; ++i) {
+            if (reference.step() != StepResult::Ok) {
+                reference_ok = false;
+                break;
+            }
+        }
+        if (!reference_ok) {
+            continue;
+        }
+
+        Cpu6510 cached(cached_bus);
+        cached.reset();
+        const RunResult result = cached.run_cached(kInstructions);
+        const std::string context = " (fuzz seed " + std::to_string(seed) + ")";
+        require(result.result == StepResult::Ok &&
+                    result.instructions_executed == static_cast<uint32_t>(kInstructions),
+                "differential fuzz cached run completes" + context);
+        const Cpu6510State& a = reference.state();
+        const Cpu6510State& b = cached.state();
+        require(a.a == b.a && a.x == b.x && a.y == b.y && a.sp == b.sp && a.p == b.p && a.pc == b.pc,
+                "differential fuzz registers match" + context);
+        require(step_bus.memory == cached_bus.memory, "differential fuzz memory matches" + context);
+    }
+}
+
+} // namespace
+#endif
+
 int main() {
     test_reset_loads_pc_from_vector();
     test_stack_wraps_on_page_one();
@@ -2053,6 +2147,7 @@ int main() {
     test_run_cached_fused_pairs_respect_budget_cuts();
     test_run_cached_realish_stress_matches_step();
     test_undocumented_run_paths_match_step();
+    test_run_cached_differential_fuzz();
 #endif
 
     std::cout << "All j6510 tests passed\n";

@@ -1406,6 +1406,9 @@ bool Cpu6510::decode_cached_op(uint8_t opcode, uint16_t operand, CachedOp& op) c
         }
         op = CachedOp{CachedOpKind::StaZpIndY, operand};
         return true;
+    case 0x6C:
+        op = CachedOp{CachedOpKind::JmpInd, operand};
+        return true;
     case 0x15:
         op = CachedOp{CachedOpKind::OraZpX, operand};
         return true;
@@ -2293,6 +2296,9 @@ void Cpu6510::execute_cached_op(const CachedOp& op) {
         set_zn(value);
         return;
     }
+    case CachedOpKind::JmpInd:
+        state_.pc = read16_nmos_indirect(op.operand);
+        return;
     case CachedOpKind::Fallback:
         return;
     }
@@ -3416,6 +3422,14 @@ J6510_FAST_CODE_ATTR void Cpu6510::execute_cached_block_direct(const CachedBlock
             write_direct(address, value);
             pc = static_cast<uint16_t>(pc + 3);
             set_zn_local(value);
+            break;
+        }
+        case CachedOpKind::JmpInd: {
+            const uint8_t low = read_direct(op.operand);
+            const uint16_t high_address =
+                static_cast<uint16_t>((op.operand & 0xFF00) | static_cast<uint8_t>(op.operand + 1));
+            const uint8_t high = read_direct(high_address);
+            pc = static_cast<uint16_t>((high << 8) | low);
             break;
         }
         case CachedOpKind::Fallback:

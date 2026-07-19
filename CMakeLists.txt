@@ -85,8 +85,23 @@ endif()
 add_executable(klaus_cached_benchmark tools/klaus_cached_main.cpp)
 target_link_libraries(klaus_cached_benchmark PRIVATE j6510_core)
 
+add_executable(msbasic_demo tools/msbasic_main.cpp)
+target_link_libraries(msbasic_demo PRIVATE j6510_core)
+
+add_test(NAME msbasic_demo COMMAND msbasic_demo 30000000)
+set_tests_properties(msbasic_demo PROPERTIES PASS_REGULAR_EXPRESSION "DONE" TIMEOUT 60)
 if(EXISTS ${KLAUS_FUNCTIONAL_IMAGE})
     add_test(NAME klaus_cached_benchmark COMMAND klaus_cached_benchmark ${KLAUS_FUNCTIONAL_IMAGE})
+else()
+    message(STATUS "Klaus functional test image not found; run scripts/fetch_external_tests.sh to enable it")
+endif()
+
+add_executable(klaus_lockstep_test tests/klaus_lockstep_main.cpp)
+target_link_libraries(klaus_lockstep_test PRIVATE j6510_core)
+
+if(EXISTS ${KLAUS_FUNCTIONAL_IMAGE})
+    add_test(NAME klaus_lockstep_test COMMAND klaus_lockstep_test ${KLAUS_FUNCTIONAL_IMAGE})
+    set_tests_properties(klaus_lockstep_test PROPERTIES LABELS slow TIMEOUT 600)
 else()
     message(STATUS "Klaus functional test image not found; run scripts/fetch_external_tests.sh to enable it")
 endif()

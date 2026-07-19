@@ -295,6 +295,7 @@ private:
         RorAbs,
         StaZpxInd,
         StaZpIndY,
+        JmpInd,
         OraZpX,
         OraAbsX,
         OraAbsY,
