@@ -20,3 +20,7 @@ third_party/klaus/readme.txt
 
 # macOS
 .DS_Store
+# Android benchmark build output
+android-benchmark/build/
+android-basic/build/
+android-basic/debug.keystore
