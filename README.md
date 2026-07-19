@@ -194,9 +194,14 @@ heap.
 
 `run_cached()` now uses a small executable cached payload for selected hot
 documented opcodes and falls back to the reference interpreter path for the rest.
-Self-modifying code remains conservative: cached blocks are invalidated by page,
-and blocks with static writes to their own code page do not use the executable
-payload. Direct 64 KB RAM buses use a faster read/write path, including the
+The cached IR covers the common load/store/transfer/branch operations plus the
+`AND/ORA/EOR/ADC/SBC/CMP/CPX/CPY` ALU families, accumulator shifts, `PHA/PHP/
+PLA/PLP`, `BIT`, `INC/DEC`, and the indirect loads `LDA (zp,X)` / `LDA (zp),Y`.
+Cache slots are hashed on the full PC instead of just its low byte, so
+page-aligned blocks no longer collide in slot zero. Self-modifying code remains
+conservative: cached blocks record their exact byte range, a write invalidates
+only blocks whose bytes contain the written address, and blocks with static
+writes overlapping their own bytes do not use the executable payload. Direct 64 KB RAM buses use a faster read/write path, including the
 default 6510 profile; accesses to `$0000/$0001` keep the normal 6510 port
 semantics while other addresses use the direct RAM pointer. Executable cached
 blocks use a tight direct-memory loop with local CPU registers. During decode,
@@ -209,10 +214,12 @@ as the likely path so branch prediction does not overpay for cold misses and
 fallback cases. The `profile` benchmark mode runs the `realish` cached workload
 and prints the cache histogram when `J6510_ENABLE_CACHE_STATS` is enabled.
 
-Current decision: the easy cached-IR opcode wins are mostly consumed. Further
-widening should wait for a real workload histogram; the next larger design
-target would be more structured cached-block specialization rather than adding
-one-off opcodes.
+Current decision: the common single-byte and ALU opcodes are now covered by
+cached IR. Remaining fallback-heavy areas are control flow beyond
+`JMP abs` (`JSR`/`RTS`/`RTI`/`BRK`, indirect jumps), memory shifts/rotates,
+`STA (zp),Y`, and the undocumented families. Further widening should wait for a
+real workload histogram; the next larger design target would be more structured
+cached-block specialization rather than adding one-off opcodes.
 
 ## External CPU Test Suites
 

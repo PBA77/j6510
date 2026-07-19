@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <functional>
 #include <array>
+#include <vector>
 
 #ifndef J6510_ENABLE_BLOCK_CACHE
 #define J6510_ENABLE_BLOCK_CACHE 1
@@ -236,6 +237,47 @@ private:
         AdcImm,
         CmpImm,
         IncZp,
+        OraImm,
+        OraZp,
+        OraAbs,
+        AndImm,
+        AndZp,
+        AndAbs,
+        EorImm,
+        EorZp,
+        EorAbs,
+        SbcImm,
+        SbcZp,
+        SbcAbs,
+        AdcZp,
+        AdcAbs,
+        CmpZp,
+        CmpAbs,
+        CpxImm,
+        CpxZp,
+        CpxAbs,
+        CpyImm,
+        CpyZp,
+        CpyAbs,
+        AslA,
+        LsrA,
+        RolA,
+        RorA,
+        Pha,
+        Php,
+        Pla,
+        Plp,
+        BitZp,
+        BitAbs,
+        IncZpX,
+        IncAbs,
+        DecZp,
+        DecZpX,
+        DecAbs,
+        StyZpX,
+        StxZpY,
+        LdaZpxInd,
+        LdaZpIndY,
     };
     struct CachedOp {
         CachedOpKind kind = CachedOpKind::Fallback;
@@ -254,8 +296,10 @@ private:
         uint8_t opcodes[J6510_CACHED_BLOCK_MAX_OPS] = {};
         CachedOp ops[J6510_CACHED_BLOCK_MAX_OPS] = {};
         RunStopReason terminator = RunStopReason::BudgetExhausted;
+        uint16_t byte_count = 0;
     };
     std::array<CachedBlock, J6510_BLOCK_CACHE_SLOTS> block_cache_{};
+    std::array<std::vector<uint16_t>, 256> block_page_slots_{};
     std::array<uint16_t, 256> cached_page_use_count_{};
     uint16_t valid_cached_blocks_ = 0;
 #if J6510_ENABLE_CACHE_STATS
@@ -268,11 +312,13 @@ private:
     void direct_write(uint16_t address, uint8_t value);
 #if J6510_ENABLE_BLOCK_CACHE
     void invalidate_block_cache_for_write(uint16_t address);
-    void add_block_to_page_counts(const CachedBlock& block);
-    void remove_block_from_page_counts(const CachedBlock& block);
-    bool block_uses_page(const CachedBlock& block, uint8_t page) const;
+    void add_block_to_page_lists(uint16_t slot_index, const CachedBlock& block);
+    void remove_block_from_page_lists(uint16_t slot_index, const CachedBlock& block);
+    bool block_contains_address(const CachedBlock& block, uint16_t address) const;
+    bool block_intersects_range(const CachedBlock& block, uint16_t first, uint16_t last) const;
+    static uint16_t block_cache_slot_index(uint16_t pc);
     CachedBlock& block_cache_slot(uint16_t pc);
-    CachedBlock decode_block(uint16_t pc);
+    void decode_block(CachedBlock& block, uint16_t pc);
     void fuse_cached_pairs(CachedBlock& block) const;
     J6510_FAST_CODE_ATTR bool execute_cached_block(const CachedBlock& block, uint32_t remaining_budget, RunResult& result);
     bool decode_cached_op(uint8_t opcode, uint16_t operand, CachedOp& op) const;

@@ -1400,7 +1400,7 @@ void test_run_cached_reports_ir_and_fallback_coverage() {
     fallback_bus.set_reset_vector(0x1500);
     const uint8_t fallback_program[] = {
         0xA9, 0x01,       // LDA #$01
-        0x08,             // PHP, intentionally not in cached IR yet
+        0x06, 0x10,       // ASL $10, intentionally not in cached IR yet
         0x4C, 0x00, 0x15, // JMP $1500
     };
     fallback_bus.load(0x1500, fallback_program, sizeof(fallback_program));
@@ -1412,8 +1412,8 @@ void test_run_cached_reports_ir_and_fallback_coverage() {
     require(fallback_stats.ir_instructions == 0, "run_cached fallback program avoids IR instructions");
     require(fallback_stats.fallback_blocks > 0, "run_cached records fallback block");
     require(fallback_stats.fallback_instructions == 3, "run_cached records fallback instructions");
-    require(fallback_stats.fallback_opcodes[0x08] == 1, "run_cached records fallback opcode histogram");
-    require(fallback_stats.unsupported_fallback_opcodes[0x08] == 1, "run_cached records unsupported fallback opcode histogram");
+    require(fallback_stats.fallback_opcodes[0x06] == 1, "run_cached records fallback opcode histogram");
+    require(fallback_stats.unsupported_fallback_opcodes[0x06] == 1, "run_cached records unsupported fallback opcode histogram");
 #endif
 }
 
