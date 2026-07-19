@@ -88,7 +88,8 @@ The cached-block executor also exposes compile-time tuning knobs:
   enabled by default for desktop diagnostics and can be disabled for embedded
   fast builds.
 - `J6510_BLOCK_CACHE_SLOTS` controls the number of cached block slots. The
-  default is `256`.
+  default is `4096` for host builds; the PlatformIO embedded environments pin
+  it back to `256` to fit their RAM budgets.
 - `J6510_CACHED_BLOCK_MAX_OPS` controls the maximum decoded operations per
   cached block. The default is `32`.
 
@@ -192,16 +193,49 @@ PSRAM on that board. The fast build disabled cache statistics, marked the hot
 cached executor for IRAM, and allocated both CPU and bus state from internal
 heap.
 
+### Real-code cached benchmark
+
+`klaus_cached_benchmark` measures the cached executor on real 6502 code instead
+of fixed loops: it runs the full Klaus functional test through `run_cached()`
+and reports throughput plus how much of the program executed in cached IR vs
+the interpreter fallback. It needs the external test image:
+
+```sh
+sh scripts/fetch_external_tests.sh
+cmake --build build-release --target klaus_cached_benchmark
+./build-release/klaus_cached_benchmark third_party/klaus/6502_functional_test.bin
+```
+
+It also runs as a `ctest` test when the image is present, so the cached path is
+validated on the whole functional suite. Sample run on an Android ARM64 phone
+(Termux, clang `-O3`, ~31.0M executed instructions; throughput ranges come from
+interleaved old/new runs, best-of-6, to bound the thermal governor variance):
+
+| Build | Instructions in IR | Throughput |
+| --- | ---: | ---: |
+| before the cached-block speedups (commit `4a316d9`) | 1.4% | 23-45 M instr/s |
+| current | 99.998% | 97-145 M instr/s |
+
+The remaining fallback is the handful of blocks containing `BRK` or
+`JMP (ind)` (528 of 31.0M instructions here); both stay in the reference
+interpreter by design. Self-modifying regions of the test invalidate and
+re-decode blocks on the fly (~0.3M invalidations in this run).
+
 `run_cached()` now uses a small executable cached payload for selected hot
 documented opcodes and falls back to the reference interpreter path for the rest.
-The cached IR covers the common load/store/transfer/branch operations plus the
-`AND/ORA/EOR/ADC/SBC/CMP/CPX/CPY` ALU families, accumulator shifts, `PHA/PHP/
-PLA/PLP`, `BIT`, `INC/DEC`, and the indirect loads `LDA (zp,X)` / `LDA (zp),Y`.
+The cached IR covers every documented opcode except `BRK` and `JMP (ind)`:
+loads/stores, the full ALU set in all addressing modes, accumulator and memory
+shifts/rotates, stack operations, `BIT`, `INC`/`DEC`, `JSR`/`RTS`/`RTI`, and
+both indirect modes. `STA (zp,X)` and `STA (zp),Y` check the computed target
+against the executing block's own bytes at runtime and bail out to the
+interpreter for the rest of the block when a store modifies its own code.
 Cache slots are hashed on the full PC instead of just its low byte, so
-page-aligned blocks no longer collide in slot zero. Self-modifying code remains
-conservative: cached blocks record their exact byte range, a write invalidates
-only blocks whose bytes contain the written address, and blocks with static
-writes overlapping their own bytes do not use the executable payload. Direct 64 KB RAM buses use a faster read/write path, including the
+page-aligned blocks no longer collide in slot zero, and executed blocks link
+directly to their successors so consecutive block executions skip the slot
+lookup. Self-modifying code remains conservative: cached blocks record their
+exact byte range, a write invalidates only blocks whose bytes contain the
+written address, and blocks with static writes overlapping their own bytes do
+not use the executable payload. Direct 64 KB RAM buses use a faster read/write path, including the
 default 6510 profile; accesses to `$0000/$0001` keep the normal 6510 port
 semantics while other addresses use the direct RAM pointer. Executable cached
 blocks use a tight direct-memory loop with local CPU registers. During decode,
@@ -214,12 +248,10 @@ as the likely path so branch prediction does not overpay for cold misses and
 fallback cases. The `profile` benchmark mode runs the `realish` cached workload
 and prints the cache histogram when `J6510_ENABLE_CACHE_STATS` is enabled.
 
-Current decision: the common single-byte and ALU opcodes are now covered by
-cached IR. Remaining fallback-heavy areas are control flow beyond
-`JMP abs` (`JSR`/`RTS`/`RTI`/`BRK`, indirect jumps), memory shifts/rotates,
-`STA (zp),Y`, and the undocumented families. Further widening should wait for a
-real workload histogram; the next larger design target would be more structured
-cached-block specialization rather than adding one-off opcodes.
+Current decision: cached IR covers every documented opcode except `BRK` and
+`JMP (ind)`, and `run_cached` chains consecutive cached blocks instead of
+re-looking them up. The undocumented families, cycle accounting in the cached
+path, and any further specialization should wait for a real workload histogram.
 
 ## External CPU Test Suites
 

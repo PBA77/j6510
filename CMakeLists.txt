@@ -8,7 +8,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 option(J6510_ENABLE_BLOCK_CACHE "Enable cached-block execution support" ON)
 option(J6510_ENABLE_CACHE_STATS "Enable cached-block execution statistics" ON)
-set(J6510_BLOCK_CACHE_SLOTS "256" CACHE STRING "Number of cached-block slots")
+set(J6510_BLOCK_CACHE_SLOTS "4096" CACHE STRING "Number of cached-block slots")
 set(J6510_CACHED_BLOCK_MAX_OPS "32" CACHE STRING "Maximum cached operations per decoded block")
 
 add_library(j6510_core
@@ -80,4 +80,13 @@ if(EXISTS ${KLAUS_INTERRUPT_IMAGE})
     add_test(NAME klaus_interrupt_test COMMAND klaus_interrupt_test ${KLAUS_INTERRUPT_IMAGE})
 else()
     message(STATUS "Klaus interrupt test image not found; run scripts/fetch_external_tests.sh to enable it")
+endif()
+
+add_executable(klaus_cached_benchmark tools/klaus_cached_main.cpp)
+target_link_libraries(klaus_cached_benchmark PRIVATE j6510_core)
+
+if(EXISTS ${KLAUS_FUNCTIONAL_IMAGE})
+    add_test(NAME klaus_cached_benchmark COMMAND klaus_cached_benchmark ${KLAUS_FUNCTIONAL_IMAGE})
+else()
+    message(STATUS "Klaus functional test image not found; run scripts/fetch_external_tests.sh to enable it")
 endif()

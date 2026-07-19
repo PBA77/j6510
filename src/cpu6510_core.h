@@ -278,6 +278,55 @@ private:
         StxZpY,
         LdaZpxInd,
         LdaZpIndY,
+        JsrAbs,
+        Rts,
+        Rti,
+        AslZp,
+        AslZpX,
+        AslAbs,
+        LsrZp,
+        LsrZpX,
+        LsrAbs,
+        RolZp,
+        RolZpX,
+        RolAbs,
+        RorZp,
+        RorZpX,
+        RorAbs,
+        StaZpxInd,
+        StaZpIndY,
+        OraZpX,
+        OraAbsX,
+        OraAbsY,
+        OraZpxInd,
+        OraZpIndY,
+        AndZpX,
+        AndAbsX,
+        AndAbsY,
+        AndZpxInd,
+        AndZpIndY,
+        EorZpX,
+        EorAbsX,
+        EorAbsY,
+        EorZpxInd,
+        EorZpIndY,
+        AdcZpX,
+        AdcAbsX,
+        AdcAbsY,
+        AdcZpxInd,
+        AdcZpIndY,
+        SbcZpX,
+        SbcAbsX,
+        SbcAbsY,
+        SbcZpxInd,
+        SbcZpIndY,
+        CmpZpX,
+        CmpAbsX,
+        CmpAbsY,
+        CmpZpxInd,
+        CmpZpIndY,
+        IncAbsX,
+        DecAbsX,
     };
     struct CachedOp {
         CachedOpKind kind = CachedOpKind::Fallback;
@@ -297,6 +346,7 @@ private:
         CachedOp ops[J6510_CACHED_BLOCK_MAX_OPS] = {};
         RunStopReason terminator = RunStopReason::BudgetExhausted;
         uint16_t byte_count = 0;
+        uint32_t linked_slot = 0xFFFFFFFF;
     };
     std::array<CachedBlock, J6510_BLOCK_CACHE_SLOTS> block_cache_{};
     std::array<std::vector<uint16_t>, 256> block_page_slots_{};
@@ -326,6 +376,8 @@ private:
     bool cached_write_is_safe_for_block(const CachedBlock& block, const CachedOp& op) const;
     bool can_use_direct_memory_path() const;
     void execute_cached_op(const CachedOp& op);
+    enum class ShiftKind : uint8_t { Asl, Lsr, Rol, Ror };
+    void shift_memory(uint16_t address, ShiftKind kind, uint8_t instruction_bytes);
     J6510_FAST_CODE_ATTR void execute_cached_block_direct_hot(const CachedBlock& block, uint32_t to_execute, RunResult& result);
     J6510_FAST_CODE_ATTR void execute_cached_block_direct(const CachedBlock& block, uint32_t to_execute, RunResult& result);
 #endif

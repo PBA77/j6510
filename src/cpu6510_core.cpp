@@ -610,30 +610,45 @@ CycleRunResult Cpu6510::run_cycles(uint32_t max_cycles) {
 J6510_FAST_CODE_ATTR RunResult Cpu6510::run_cached(uint32_t max_instructions) {
 #if J6510_ENABLE_BLOCK_CACHE
     RunResult result{};
+    CachedBlock* previous_block = nullptr;
     while (result.instructions_executed < max_instructions) {
         if (J6510_UNLIKELY(has_pending_interrupt_work())) {
             result.stop_pc = state_.pc;
             return result;
         }
 
-        CachedBlock& slot = block_cache_slot(state_.pc);
-        if (J6510_UNLIKELY(!slot.valid || slot.start_pc != state_.pc)) {
-            const uint16_t slot_index = block_cache_slot_index(state_.pc);
-            if (slot.valid) {
-                remove_block_from_page_lists(slot_index, slot);
-                --valid_cached_blocks_;
+        CachedBlock* slot = nullptr;
+        if (previous_block != nullptr && previous_block->linked_slot != 0xFFFFFFFF) {
+            CachedBlock& linked = block_cache_[previous_block->linked_slot];
+            if (J6510_LIKELY(linked.valid && linked.start_pc == state_.pc)) {
+                slot = &linked;
+                J6510_CACHE_STATS(++block_cache_stats_.hits);
             }
-            decode_block(slot, state_.pc);
-            add_block_to_page_lists(slot_index, slot);
-            ++valid_cached_blocks_;
-            J6510_CACHE_STATS(++block_cache_stats_.misses);
-        } else {
-            J6510_CACHE_STATS(++block_cache_stats_.hits);
+        }
+        if (slot == nullptr) {
+            const uint16_t slot_index = block_cache_slot_index(state_.pc);
+            slot = &block_cache_[slot_index];
+            if (J6510_UNLIKELY(!slot->valid || slot->start_pc != state_.pc)) {
+                if (slot->valid) {
+                    remove_block_from_page_lists(slot_index, *slot);
+                    --valid_cached_blocks_;
+                }
+                decode_block(*slot, state_.pc);
+                add_block_to_page_lists(slot_index, *slot);
+                ++valid_cached_blocks_;
+                J6510_CACHE_STATS(++block_cache_stats_.misses);
+            } else {
+                J6510_CACHE_STATS(++block_cache_stats_.hits);
+            }
         }
 
-        if (!execute_cached_block(slot, max_instructions - result.instructions_executed, result)) {
+        if (previous_block != nullptr) {
+            previous_block->linked_slot = static_cast<uint32_t>(slot - block_cache_.data());
+        }
+        if (!execute_cached_block(*slot, max_instructions - result.instructions_executed, result)) {
             return result;
         }
+        previous_block = slot;
     }
     result.stop_pc = state_.pc;
     return result;
@@ -873,7 +888,15 @@ void Cpu6510::decode_block(CachedBlock& block, uint16_t pc) {
                  kind == CachedOpKind::StxZpY || kind == CachedOpKind::IncZp ||
                  kind == CachedOpKind::IncZpX || kind == CachedOpKind::IncAbs ||
                  kind == CachedOpKind::DecZp || kind == CachedOpKind::DecZpX ||
-                 kind == CachedOpKind::DecAbs) &&
+                 kind == CachedOpKind::DecAbs || kind == CachedOpKind::AslZp ||
+                 kind == CachedOpKind::AslZpX || kind == CachedOpKind::AslAbs ||
+                 kind == CachedOpKind::LsrZp || kind == CachedOpKind::LsrZpX ||
+                 kind == CachedOpKind::LsrAbs || kind == CachedOpKind::RolZp ||
+                 kind == CachedOpKind::RolZpX || kind == CachedOpKind::RolAbs ||
+                 kind == CachedOpKind::RorZp || kind == CachedOpKind::RorZpX ||
+                 kind == CachedOpKind::RorAbs || kind == CachedOpKind::Pha ||
+                 kind == CachedOpKind::Php || kind == CachedOpKind::JsrAbs ||
+                 kind == CachedOpKind::IncAbsX || kind == CachedOpKind::DecAbsX) &&
                 !cached_write_is_safe_for_block(block, block.ops[i])) {
                 block.executable = false;
                 return;
@@ -1322,6 +1345,163 @@ bool Cpu6510::decode_cached_op(uint8_t opcode, uint16_t operand, CachedOp& op) c
     case 0xB1:
         op = CachedOp{CachedOpKind::LdaZpIndY, operand};
         return true;
+    case 0x20:
+        op = CachedOp{CachedOpKind::JsrAbs, operand};
+        return true;
+    case 0x60:
+        op = CachedOp{CachedOpKind::Rts, 0};
+        return true;
+    case 0x40:
+        op = CachedOp{CachedOpKind::Rti, 0};
+        return true;
+    case 0x06:
+        op = CachedOp{CachedOpKind::AslZp, operand};
+        return true;
+    case 0x16:
+        op = CachedOp{CachedOpKind::AslZpX, operand};
+        return true;
+    case 0x0E:
+        op = CachedOp{CachedOpKind::AslAbs, operand};
+        return true;
+    case 0x46:
+        op = CachedOp{CachedOpKind::LsrZp, operand};
+        return true;
+    case 0x56:
+        op = CachedOp{CachedOpKind::LsrZpX, operand};
+        return true;
+    case 0x4E:
+        op = CachedOp{CachedOpKind::LsrAbs, operand};
+        return true;
+    case 0x26:
+        op = CachedOp{CachedOpKind::RolZp, operand};
+        return true;
+    case 0x36:
+        op = CachedOp{CachedOpKind::RolZpX, operand};
+        return true;
+    case 0x2E:
+        op = CachedOp{CachedOpKind::RolAbs, operand};
+        return true;
+    case 0x66:
+        op = CachedOp{CachedOpKind::RorZp, operand};
+        return true;
+    case 0x76:
+        op = CachedOp{CachedOpKind::RorZpX, operand};
+        return true;
+    case 0x6E:
+        op = CachedOp{CachedOpKind::RorAbs, operand};
+        return true;
+    case 0x81:
+        // Runtime self-modification bail-out exists only in the direct-memory
+        // executor; the bus path must keep the interpreter fallback here.
+        if (direct_memory_ == nullptr) {
+            op = CachedOp{CachedOpKind::Fallback, 0};
+            return false;
+        }
+        op = CachedOp{CachedOpKind::StaZpxInd, operand};
+        return true;
+    case 0x91:
+        if (direct_memory_ == nullptr) {
+            op = CachedOp{CachedOpKind::Fallback, 0};
+            return false;
+        }
+        op = CachedOp{CachedOpKind::StaZpIndY, operand};
+        return true;
+    case 0x15:
+        op = CachedOp{CachedOpKind::OraZpX, operand};
+        return true;
+    case 0x1D:
+        op = CachedOp{CachedOpKind::OraAbsX, operand};
+        return true;
+    case 0x19:
+        op = CachedOp{CachedOpKind::OraAbsY, operand};
+        return true;
+    case 0x01:
+        op = CachedOp{CachedOpKind::OraZpxInd, operand};
+        return true;
+    case 0x11:
+        op = CachedOp{CachedOpKind::OraZpIndY, operand};
+        return true;
+    case 0x35:
+        op = CachedOp{CachedOpKind::AndZpX, operand};
+        return true;
+    case 0x3D:
+        op = CachedOp{CachedOpKind::AndAbsX, operand};
+        return true;
+    case 0x39:
+        op = CachedOp{CachedOpKind::AndAbsY, operand};
+        return true;
+    case 0x21:
+        op = CachedOp{CachedOpKind::AndZpxInd, operand};
+        return true;
+    case 0x31:
+        op = CachedOp{CachedOpKind::AndZpIndY, operand};
+        return true;
+    case 0x55:
+        op = CachedOp{CachedOpKind::EorZpX, operand};
+        return true;
+    case 0x5D:
+        op = CachedOp{CachedOpKind::EorAbsX, operand};
+        return true;
+    case 0x59:
+        op = CachedOp{CachedOpKind::EorAbsY, operand};
+        return true;
+    case 0x41:
+        op = CachedOp{CachedOpKind::EorZpxInd, operand};
+        return true;
+    case 0x51:
+        op = CachedOp{CachedOpKind::EorZpIndY, operand};
+        return true;
+    case 0x75:
+        op = CachedOp{CachedOpKind::AdcZpX, operand};
+        return true;
+    case 0x7D:
+        op = CachedOp{CachedOpKind::AdcAbsX, operand};
+        return true;
+    case 0x79:
+        op = CachedOp{CachedOpKind::AdcAbsY, operand};
+        return true;
+    case 0x61:
+        op = CachedOp{CachedOpKind::AdcZpxInd, operand};
+        return true;
+    case 0x71:
+        op = CachedOp{CachedOpKind::AdcZpIndY, operand};
+        return true;
+    case 0xF5:
+        op = CachedOp{CachedOpKind::SbcZpX, operand};
+        return true;
+    case 0xFD:
+        op = CachedOp{CachedOpKind::SbcAbsX, operand};
+        return true;
+    case 0xF9:
+        op = CachedOp{CachedOpKind::SbcAbsY, operand};
+        return true;
+    case 0xE1:
+        op = CachedOp{CachedOpKind::SbcZpxInd, operand};
+        return true;
+    case 0xF1:
+        op = CachedOp{CachedOpKind::SbcZpIndY, operand};
+        return true;
+    case 0xD5:
+        op = CachedOp{CachedOpKind::CmpZpX, operand};
+        return true;
+    case 0xDD:
+        op = CachedOp{CachedOpKind::CmpAbsX, operand};
+        return true;
+    case 0xD9:
+        op = CachedOp{CachedOpKind::CmpAbsY, operand};
+        return true;
+    case 0xC1:
+        op = CachedOp{CachedOpKind::CmpZpxInd, operand};
+        return true;
+    case 0xD1:
+        op = CachedOp{CachedOpKind::CmpZpIndY, operand};
+        return true;
+    case 0xFE:
+        op = CachedOp{CachedOpKind::IncAbsX, operand};
+        return true;
+    case 0xDE:
+        op = CachedOp{CachedOpKind::DecAbsX, operand};
+        return true;
     default:
         op = CachedOp{CachedOpKind::Fallback, 0};
         return false;
@@ -1376,22 +1556,40 @@ bool Cpu6510::cached_write_is_safe_for_block(const CachedBlock& block, const Cac
     case CachedOpKind::StyAbs:
     case CachedOpKind::IncAbs:
     case CachedOpKind::DecAbs:
+    case CachedOpKind::AslAbs:
+    case CachedOpKind::LsrAbs:
+    case CachedOpKind::RolAbs:
+    case CachedOpKind::RorAbs:
         return !block_contains_address(block, op.operand);
     case CachedOpKind::StaZp:
     case CachedOpKind::StyZp:
     case CachedOpKind::StxZp:
     case CachedOpKind::IncZp:
     case CachedOpKind::DecZp:
+    case CachedOpKind::AslZp:
+    case CachedOpKind::LsrZp:
+    case CachedOpKind::RolZp:
+    case CachedOpKind::RorZp:
         return !block_contains_address(block, op.operand);
     case CachedOpKind::StaZpX:
     case CachedOpKind::StyZpX:
     case CachedOpKind::StxZpY:
     case CachedOpKind::IncZpX:
     case CachedOpKind::DecZpX:
+    case CachedOpKind::AslZpX:
+    case CachedOpKind::LsrZpX:
+    case CachedOpKind::RolZpX:
+    case CachedOpKind::RorZpX:
         return !block_intersects_range(block, 0x0000, 0x00FF);
     case CachedOpKind::StaAbsX:
     case CachedOpKind::StaAbsY:
+    case CachedOpKind::IncAbsX:
+    case CachedOpKind::DecAbsX:
         return !block_intersects_range(block, op.operand, static_cast<uint16_t>(op.operand + 0xFF));
+    case CachedOpKind::Pha:
+    case CachedOpKind::Php:
+    case CachedOpKind::JsrAbs:
+        return !block_intersects_range(block, 0x0100, 0x01FF);
     default:
         return true;
     }
@@ -1877,6 +2075,224 @@ void Cpu6510::execute_cached_op(const CachedOp& op) {
         state_.pc = static_cast<uint16_t>(state_.pc + 2);
         set_zn(state_.a);
         return;
+    case CachedOpKind::JsrAbs: {
+        const uint16_t return_address = static_cast<uint16_t>(state_.pc + 2);
+        push(static_cast<uint8_t>(return_address >> 8));
+        push(static_cast<uint8_t>(return_address & 0xFF));
+        state_.pc = op.operand;
+        return;
+    }
+    case CachedOpKind::Rts: {
+        const uint8_t low = pull();
+        const uint8_t high = pull();
+        state_.pc = static_cast<uint16_t>(((high << 8) | low) + 1);
+        return;
+    }
+    case CachedOpKind::Rti: {
+        state_.p = normalized_p(pull());
+        const uint8_t low = pull();
+        const uint8_t high = pull();
+        state_.pc = static_cast<uint16_t>((high << 8) | low);
+        return;
+    }
+    case CachedOpKind::AslZp:
+        shift_memory(static_cast<uint8_t>(op.operand), ShiftKind::Asl, 2);
+        return;
+    case CachedOpKind::AslZpX:
+        shift_memory(static_cast<uint8_t>(op.operand + state_.x), ShiftKind::Asl, 2);
+        return;
+    case CachedOpKind::AslAbs:
+        shift_memory(op.operand, ShiftKind::Asl, 3);
+        return;
+    case CachedOpKind::LsrZp:
+        shift_memory(static_cast<uint8_t>(op.operand), ShiftKind::Lsr, 2);
+        return;
+    case CachedOpKind::LsrZpX:
+        shift_memory(static_cast<uint8_t>(op.operand + state_.x), ShiftKind::Lsr, 2);
+        return;
+    case CachedOpKind::LsrAbs:
+        shift_memory(op.operand, ShiftKind::Lsr, 3);
+        return;
+    case CachedOpKind::RolZp:
+        shift_memory(static_cast<uint8_t>(op.operand), ShiftKind::Rol, 2);
+        return;
+    case CachedOpKind::RolZpX:
+        shift_memory(static_cast<uint8_t>(op.operand + state_.x), ShiftKind::Rol, 2);
+        return;
+    case CachedOpKind::RolAbs:
+        shift_memory(op.operand, ShiftKind::Rol, 3);
+        return;
+    case CachedOpKind::RorZp:
+        shift_memory(static_cast<uint8_t>(op.operand), ShiftKind::Ror, 2);
+        return;
+    case CachedOpKind::RorZpX:
+        shift_memory(static_cast<uint8_t>(op.operand + state_.x), ShiftKind::Ror, 2);
+        return;
+    case CachedOpKind::RorAbs:
+        shift_memory(op.operand, ShiftKind::Ror, 3);
+        return;
+    case CachedOpKind::StaZpxInd:
+        write(read16_zp(static_cast<uint8_t>(op.operand + state_.x)), state_.a);
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        return;
+    case CachedOpKind::StaZpIndY:
+        write(static_cast<uint16_t>(read16_zp(static_cast<uint8_t>(op.operand)) + state_.y), state_.a);
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        return;
+    case CachedOpKind::OraZpX:
+        state_.a = static_cast<uint8_t>(state_.a | read(static_cast<uint8_t>(op.operand + state_.x)));
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        set_zn(state_.a);
+        return;
+    case CachedOpKind::OraAbsX:
+        state_.a = static_cast<uint8_t>(state_.a | read(static_cast<uint16_t>(op.operand + state_.x)));
+        state_.pc = static_cast<uint16_t>(state_.pc + 3);
+        set_zn(state_.a);
+        return;
+    case CachedOpKind::OraAbsY:
+        state_.a = static_cast<uint8_t>(state_.a | read(static_cast<uint16_t>(op.operand + state_.y)));
+        state_.pc = static_cast<uint16_t>(state_.pc + 3);
+        set_zn(state_.a);
+        return;
+    case CachedOpKind::OraZpxInd:
+        state_.a = static_cast<uint8_t>(state_.a | read(read16_zp(static_cast<uint8_t>(op.operand + state_.x))));
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        set_zn(state_.a);
+        return;
+    case CachedOpKind::OraZpIndY:
+        state_.a = static_cast<uint8_t>(state_.a |
+                                        read(static_cast<uint16_t>(read16_zp(static_cast<uint8_t>(op.operand)) + state_.y)));
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        set_zn(state_.a);
+        return;
+    case CachedOpKind::AndZpX:
+        state_.a = static_cast<uint8_t>(state_.a & read(static_cast<uint8_t>(op.operand + state_.x)));
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        set_zn(state_.a);
+        return;
+    case CachedOpKind::AndAbsX:
+        state_.a = static_cast<uint8_t>(state_.a & read(static_cast<uint16_t>(op.operand + state_.x)));
+        state_.pc = static_cast<uint16_t>(state_.pc + 3);
+        set_zn(state_.a);
+        return;
+    case CachedOpKind::AndAbsY:
+        state_.a = static_cast<uint8_t>(state_.a & read(static_cast<uint16_t>(op.operand + state_.y)));
+        state_.pc = static_cast<uint16_t>(state_.pc + 3);
+        set_zn(state_.a);
+        return;
+    case CachedOpKind::AndZpxInd:
+        state_.a = static_cast<uint8_t>(state_.a & read(read16_zp(static_cast<uint8_t>(op.operand + state_.x))));
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        set_zn(state_.a);
+        return;
+    case CachedOpKind::AndZpIndY:
+        state_.a = static_cast<uint8_t>(state_.a &
+                                        read(static_cast<uint16_t>(read16_zp(static_cast<uint8_t>(op.operand)) + state_.y)));
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        set_zn(state_.a);
+        return;
+    case CachedOpKind::EorZpX:
+        state_.a = static_cast<uint8_t>(state_.a ^ read(static_cast<uint8_t>(op.operand + state_.x)));
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        set_zn(state_.a);
+        return;
+    case CachedOpKind::EorAbsX:
+        state_.a = static_cast<uint8_t>(state_.a ^ read(static_cast<uint16_t>(op.operand + state_.x)));
+        state_.pc = static_cast<uint16_t>(state_.pc + 3);
+        set_zn(state_.a);
+        return;
+    case CachedOpKind::EorAbsY:
+        state_.a = static_cast<uint8_t>(state_.a ^ read(static_cast<uint16_t>(op.operand + state_.y)));
+        state_.pc = static_cast<uint16_t>(state_.pc + 3);
+        set_zn(state_.a);
+        return;
+    case CachedOpKind::EorZpxInd:
+        state_.a = static_cast<uint8_t>(state_.a ^ read(read16_zp(static_cast<uint8_t>(op.operand + state_.x))));
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        set_zn(state_.a);
+        return;
+    case CachedOpKind::EorZpIndY:
+        state_.a = static_cast<uint8_t>(state_.a ^
+                                        read(static_cast<uint16_t>(read16_zp(static_cast<uint8_t>(op.operand)) + state_.y)));
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        set_zn(state_.a);
+        return;
+    case CachedOpKind::AdcZpX:
+        adc(read(static_cast<uint8_t>(op.operand + state_.x)));
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        return;
+    case CachedOpKind::AdcAbsX:
+        adc(read(static_cast<uint16_t>(op.operand + state_.x)));
+        state_.pc = static_cast<uint16_t>(state_.pc + 3);
+        return;
+    case CachedOpKind::AdcAbsY:
+        adc(read(static_cast<uint16_t>(op.operand + state_.y)));
+        state_.pc = static_cast<uint16_t>(state_.pc + 3);
+        return;
+    case CachedOpKind::AdcZpxInd:
+        adc(read(read16_zp(static_cast<uint8_t>(op.operand + state_.x))));
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        return;
+    case CachedOpKind::AdcZpIndY:
+        adc(read(static_cast<uint16_t>(read16_zp(static_cast<uint8_t>(op.operand)) + state_.y)));
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        return;
+    case CachedOpKind::SbcZpX:
+        sbc(read(static_cast<uint8_t>(op.operand + state_.x)));
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        return;
+    case CachedOpKind::SbcAbsX:
+        sbc(read(static_cast<uint16_t>(op.operand + state_.x)));
+        state_.pc = static_cast<uint16_t>(state_.pc + 3);
+        return;
+    case CachedOpKind::SbcAbsY:
+        sbc(read(static_cast<uint16_t>(op.operand + state_.y)));
+        state_.pc = static_cast<uint16_t>(state_.pc + 3);
+        return;
+    case CachedOpKind::SbcZpxInd:
+        sbc(read(read16_zp(static_cast<uint8_t>(op.operand + state_.x))));
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        return;
+    case CachedOpKind::SbcZpIndY:
+        sbc(read(static_cast<uint16_t>(read16_zp(static_cast<uint8_t>(op.operand)) + state_.y)));
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        return;
+    case CachedOpKind::CmpZpX:
+        compare(state_.a, read(static_cast<uint8_t>(op.operand + state_.x)));
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        return;
+    case CachedOpKind::CmpAbsX:
+        compare(state_.a, read(static_cast<uint16_t>(op.operand + state_.x)));
+        state_.pc = static_cast<uint16_t>(state_.pc + 3);
+        return;
+    case CachedOpKind::CmpAbsY:
+        compare(state_.a, read(static_cast<uint16_t>(op.operand + state_.y)));
+        state_.pc = static_cast<uint16_t>(state_.pc + 3);
+        return;
+    case CachedOpKind::CmpZpxInd:
+        compare(state_.a, read(read16_zp(static_cast<uint8_t>(op.operand + state_.x))));
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        return;
+    case CachedOpKind::CmpZpIndY:
+        compare(state_.a, read(static_cast<uint16_t>(read16_zp(static_cast<uint8_t>(op.operand)) + state_.y)));
+        state_.pc = static_cast<uint16_t>(state_.pc + 2);
+        return;
+    case CachedOpKind::IncAbsX: {
+        const uint16_t address = static_cast<uint16_t>(op.operand + state_.x);
+        const uint8_t value = static_cast<uint8_t>(read(address) + 1);
+        write(address, value);
+        state_.pc = static_cast<uint16_t>(state_.pc + 3);
+        set_zn(value);
+        return;
+    }
+    case CachedOpKind::DecAbsX: {
+        const uint16_t address = static_cast<uint16_t>(op.operand + state_.x);
+        const uint8_t value = static_cast<uint8_t>(read(address) - 1);
+        write(address, value);
+        state_.pc = static_cast<uint16_t>(state_.pc + 3);
+        set_zn(value);
+        return;
+    }
     case CachedOpKind::Fallback:
         return;
     }
@@ -2151,6 +2567,7 @@ J6510_FAST_CODE_ATTR void Cpu6510::execute_cached_block_direct(const CachedBlock
         }
     };
 
+    uint32_t executed = to_execute;
     for (uint32_t i = 0; i < to_execute; ++i) {
         const CachedOp& op = block.ops[i];
         switch (op.kind) {
@@ -2628,19 +3045,419 @@ J6510_FAST_CODE_ATTR void Cpu6510::execute_cached_block_direct(const CachedBlock
             set_zn_local(a);
             break;
         }
+        case CachedOpKind::JsrAbs: {
+            const uint16_t return_address = static_cast<uint16_t>(pc + 2);
+            write_direct(static_cast<uint16_t>(0x0100 | state_.sp), static_cast<uint8_t>(return_address >> 8));
+            state_.sp = static_cast<uint8_t>(state_.sp - 1);
+            write_direct(static_cast<uint16_t>(0x0100 | state_.sp), static_cast<uint8_t>(return_address & 0xFF));
+            state_.sp = static_cast<uint8_t>(state_.sp - 1);
+            pc = op.operand;
+            break;
+        }
+        case CachedOpKind::Rts: {
+            state_.sp = static_cast<uint8_t>(state_.sp + 1);
+            const uint8_t low = read_direct(static_cast<uint16_t>(0x0100 | state_.sp));
+            state_.sp = static_cast<uint8_t>(state_.sp + 1);
+            const uint8_t high = read_direct(static_cast<uint16_t>(0x0100 | state_.sp));
+            pc = static_cast<uint16_t>(((high << 8) | low) + 1);
+            break;
+        }
+        case CachedOpKind::Rti: {
+            state_.sp = static_cast<uint8_t>(state_.sp + 1);
+            p = static_cast<uint8_t>((read_direct(static_cast<uint16_t>(0x0100 | state_.sp)) & ~FLAG_B) | FLAG_U);
+            state_.sp = static_cast<uint8_t>(state_.sp + 1);
+            const uint8_t low = read_direct(static_cast<uint16_t>(0x0100 | state_.sp));
+            state_.sp = static_cast<uint8_t>(state_.sp + 1);
+            const uint8_t high = read_direct(static_cast<uint16_t>(0x0100 | state_.sp));
+            pc = static_cast<uint16_t>((high << 8) | low);
+            break;
+        }
+        case CachedOpKind::AslZp: {
+            const uint16_t address = static_cast<uint8_t>(op.operand);
+            const uint8_t value = read_direct(address);
+            p = with_flag(p, FLAG_C, (value & 0x80) != 0);
+            const uint8_t shifted = static_cast<uint8_t>(value << 1);
+            write_direct(address, shifted);
+            pc = static_cast<uint16_t>(pc + 2);
+            set_zn_local(shifted);
+            break;
+        }
+        case CachedOpKind::AslZpX: {
+            const uint16_t address = static_cast<uint8_t>(op.operand + x);
+            const uint8_t value = read_direct(address);
+            p = with_flag(p, FLAG_C, (value & 0x80) != 0);
+            const uint8_t shifted = static_cast<uint8_t>(value << 1);
+            write_direct(address, shifted);
+            pc = static_cast<uint16_t>(pc + 2);
+            set_zn_local(shifted);
+            break;
+        }
+        case CachedOpKind::AslAbs: {
+            const uint8_t value = read_direct(op.operand);
+            p = with_flag(p, FLAG_C, (value & 0x80) != 0);
+            const uint8_t shifted = static_cast<uint8_t>(value << 1);
+            write_direct(op.operand, shifted);
+            pc = static_cast<uint16_t>(pc + 3);
+            set_zn_local(shifted);
+            break;
+        }
+        case CachedOpKind::LsrZp: {
+            const uint16_t address = static_cast<uint8_t>(op.operand);
+            const uint8_t value = read_direct(address);
+            p = with_flag(p, FLAG_C, (value & 0x01) != 0);
+            const uint8_t shifted = static_cast<uint8_t>(value >> 1);
+            write_direct(address, shifted);
+            pc = static_cast<uint16_t>(pc + 2);
+            set_zn_local(shifted);
+            break;
+        }
+        case CachedOpKind::LsrZpX: {
+            const uint16_t address = static_cast<uint8_t>(op.operand + x);
+            const uint8_t value = read_direct(address);
+            p = with_flag(p, FLAG_C, (value & 0x01) != 0);
+            const uint8_t shifted = static_cast<uint8_t>(value >> 1);
+            write_direct(address, shifted);
+            pc = static_cast<uint16_t>(pc + 2);
+            set_zn_local(shifted);
+            break;
+        }
+        case CachedOpKind::LsrAbs: {
+            const uint8_t value = read_direct(op.operand);
+            p = with_flag(p, FLAG_C, (value & 0x01) != 0);
+            const uint8_t shifted = static_cast<uint8_t>(value >> 1);
+            write_direct(op.operand, shifted);
+            pc = static_cast<uint16_t>(pc + 3);
+            set_zn_local(shifted);
+            break;
+        }
+        case CachedOpKind::RolZp: {
+            const uint16_t address = static_cast<uint8_t>(op.operand);
+            const uint8_t value = read_direct(address);
+            const uint8_t carry_in = (p & FLAG_C) != 0 ? 1 : 0;
+            p = with_flag(p, FLAG_C, (value & 0x80) != 0);
+            const uint8_t shifted = static_cast<uint8_t>((value << 1) | carry_in);
+            write_direct(address, shifted);
+            pc = static_cast<uint16_t>(pc + 2);
+            set_zn_local(shifted);
+            break;
+        }
+        case CachedOpKind::RolZpX: {
+            const uint16_t address = static_cast<uint8_t>(op.operand + x);
+            const uint8_t value = read_direct(address);
+            const uint8_t carry_in = (p & FLAG_C) != 0 ? 1 : 0;
+            p = with_flag(p, FLAG_C, (value & 0x80) != 0);
+            const uint8_t shifted = static_cast<uint8_t>((value << 1) | carry_in);
+            write_direct(address, shifted);
+            pc = static_cast<uint16_t>(pc + 2);
+            set_zn_local(shifted);
+            break;
+        }
+        case CachedOpKind::RolAbs: {
+            const uint8_t value = read_direct(op.operand);
+            const uint8_t carry_in = (p & FLAG_C) != 0 ? 1 : 0;
+            p = with_flag(p, FLAG_C, (value & 0x80) != 0);
+            const uint8_t shifted = static_cast<uint8_t>((value << 1) | carry_in);
+            write_direct(op.operand, shifted);
+            pc = static_cast<uint16_t>(pc + 3);
+            set_zn_local(shifted);
+            break;
+        }
+        case CachedOpKind::RorZp: {
+            const uint16_t address = static_cast<uint8_t>(op.operand);
+            const uint8_t value = read_direct(address);
+            const uint8_t carry_in = (p & FLAG_C) != 0 ? 0x80 : 0;
+            p = with_flag(p, FLAG_C, (value & 0x01) != 0);
+            const uint8_t shifted = static_cast<uint8_t>((value >> 1) | carry_in);
+            write_direct(address, shifted);
+            pc = static_cast<uint16_t>(pc + 2);
+            set_zn_local(shifted);
+            break;
+        }
+        case CachedOpKind::RorZpX: {
+            const uint16_t address = static_cast<uint8_t>(op.operand + x);
+            const uint8_t value = read_direct(address);
+            const uint8_t carry_in = (p & FLAG_C) != 0 ? 0x80 : 0;
+            p = with_flag(p, FLAG_C, (value & 0x01) != 0);
+            const uint8_t shifted = static_cast<uint8_t>((value >> 1) | carry_in);
+            write_direct(address, shifted);
+            pc = static_cast<uint16_t>(pc + 2);
+            set_zn_local(shifted);
+            break;
+        }
+        case CachedOpKind::RorAbs: {
+            const uint8_t value = read_direct(op.operand);
+            const uint8_t carry_in = (p & FLAG_C) != 0 ? 0x80 : 0;
+            p = with_flag(p, FLAG_C, (value & 0x01) != 0);
+            const uint8_t shifted = static_cast<uint8_t>((value >> 1) | carry_in);
+            write_direct(op.operand, shifted);
+            pc = static_cast<uint16_t>(pc + 3);
+            set_zn_local(shifted);
+            break;
+        }
+        case CachedOpKind::StaZpxInd: {
+            const uint8_t zp = static_cast<uint8_t>(op.operand + x);
+            const uint16_t pointer =
+                static_cast<uint16_t>((read_direct(static_cast<uint8_t>(zp + 1)) << 8) | read_direct(zp));
+            write_direct(pointer, a);
+            pc = static_cast<uint16_t>(pc + 2);
+            if (J6510_UNLIKELY(block_contains_address(block, pointer))) {
+                executed = static_cast<uint32_t>(i + 1);
+                goto writeback;
+            }
+            break;
+        }
+        case CachedOpKind::StaZpIndY: {
+            const uint8_t zp = static_cast<uint8_t>(op.operand);
+            const uint16_t pointer =
+                static_cast<uint16_t>((read_direct(static_cast<uint8_t>(zp + 1)) << 8) | read_direct(zp));
+            const uint16_t address = static_cast<uint16_t>(pointer + y);
+            write_direct(address, a);
+            pc = static_cast<uint16_t>(pc + 2);
+            if (J6510_UNLIKELY(block_contains_address(block, address))) {
+                executed = static_cast<uint32_t>(i + 1);
+                goto writeback;
+            }
+            break;
+        }
+        case CachedOpKind::OraZpX:
+            a = static_cast<uint8_t>(a | read_direct(static_cast<uint8_t>(op.operand + x)));
+            pc = static_cast<uint16_t>(pc + 2);
+            set_zn_local(a);
+            break;
+        case CachedOpKind::OraAbsX:
+            a = static_cast<uint8_t>(a | read_direct(static_cast<uint16_t>(op.operand + x)));
+            pc = static_cast<uint16_t>(pc + 3);
+            set_zn_local(a);
+            break;
+        case CachedOpKind::OraAbsY:
+            a = static_cast<uint8_t>(a | read_direct(static_cast<uint16_t>(op.operand + y)));
+            pc = static_cast<uint16_t>(pc + 3);
+            set_zn_local(a);
+            break;
+        case CachedOpKind::OraZpxInd: {
+            const uint8_t zp = static_cast<uint8_t>(op.operand + x);
+            const uint16_t pointer =
+                static_cast<uint16_t>((read_direct(static_cast<uint8_t>(zp + 1)) << 8) | read_direct(zp));
+            a = static_cast<uint8_t>(a | read_direct(pointer));
+            pc = static_cast<uint16_t>(pc + 2);
+            set_zn_local(a);
+            break;
+        }
+        case CachedOpKind::OraZpIndY: {
+            const uint8_t zp = static_cast<uint8_t>(op.operand);
+            const uint16_t pointer =
+                static_cast<uint16_t>((read_direct(static_cast<uint8_t>(zp + 1)) << 8) | read_direct(zp));
+            a = static_cast<uint8_t>(a | read_direct(static_cast<uint16_t>(pointer + y)));
+            pc = static_cast<uint16_t>(pc + 2);
+            set_zn_local(a);
+            break;
+        }
+        case CachedOpKind::AndZpX:
+            a = static_cast<uint8_t>(a & read_direct(static_cast<uint8_t>(op.operand + x)));
+            pc = static_cast<uint16_t>(pc + 2);
+            set_zn_local(a);
+            break;
+        case CachedOpKind::AndAbsX:
+            a = static_cast<uint8_t>(a & read_direct(static_cast<uint16_t>(op.operand + x)));
+            pc = static_cast<uint16_t>(pc + 3);
+            set_zn_local(a);
+            break;
+        case CachedOpKind::AndAbsY:
+            a = static_cast<uint8_t>(a & read_direct(static_cast<uint16_t>(op.operand + y)));
+            pc = static_cast<uint16_t>(pc + 3);
+            set_zn_local(a);
+            break;
+        case CachedOpKind::AndZpxInd: {
+            const uint8_t zp = static_cast<uint8_t>(op.operand + x);
+            const uint16_t pointer =
+                static_cast<uint16_t>((read_direct(static_cast<uint8_t>(zp + 1)) << 8) | read_direct(zp));
+            a = static_cast<uint8_t>(a & read_direct(pointer));
+            pc = static_cast<uint16_t>(pc + 2);
+            set_zn_local(a);
+            break;
+        }
+        case CachedOpKind::AndZpIndY: {
+            const uint8_t zp = static_cast<uint8_t>(op.operand);
+            const uint16_t pointer =
+                static_cast<uint16_t>((read_direct(static_cast<uint8_t>(zp + 1)) << 8) | read_direct(zp));
+            a = static_cast<uint8_t>(a & read_direct(static_cast<uint16_t>(pointer + y)));
+            pc = static_cast<uint16_t>(pc + 2);
+            set_zn_local(a);
+            break;
+        }
+        case CachedOpKind::EorZpX:
+            a = static_cast<uint8_t>(a ^ read_direct(static_cast<uint8_t>(op.operand + x)));
+            pc = static_cast<uint16_t>(pc + 2);
+            set_zn_local(a);
+            break;
+        case CachedOpKind::EorAbsX:
+            a = static_cast<uint8_t>(a ^ read_direct(static_cast<uint16_t>(op.operand + x)));
+            pc = static_cast<uint16_t>(pc + 3);
+            set_zn_local(a);
+            break;
+        case CachedOpKind::EorAbsY:
+            a = static_cast<uint8_t>(a ^ read_direct(static_cast<uint16_t>(op.operand + y)));
+            pc = static_cast<uint16_t>(pc + 3);
+            set_zn_local(a);
+            break;
+        case CachedOpKind::EorZpxInd: {
+            const uint8_t zp = static_cast<uint8_t>(op.operand + x);
+            const uint16_t pointer =
+                static_cast<uint16_t>((read_direct(static_cast<uint8_t>(zp + 1)) << 8) | read_direct(zp));
+            a = static_cast<uint8_t>(a ^ read_direct(pointer));
+            pc = static_cast<uint16_t>(pc + 2);
+            set_zn_local(a);
+            break;
+        }
+        case CachedOpKind::EorZpIndY: {
+            const uint8_t zp = static_cast<uint8_t>(op.operand);
+            const uint16_t pointer =
+                static_cast<uint16_t>((read_direct(static_cast<uint8_t>(zp + 1)) << 8) | read_direct(zp));
+            a = static_cast<uint8_t>(a ^ read_direct(static_cast<uint16_t>(pointer + y)));
+            pc = static_cast<uint16_t>(pc + 2);
+            set_zn_local(a);
+            break;
+        }
+        case CachedOpKind::AdcZpX:
+            a = adc_result(a, read_direct(static_cast<uint8_t>(op.operand + x)), p);
+            pc = static_cast<uint16_t>(pc + 2);
+            break;
+        case CachedOpKind::AdcAbsX:
+            a = adc_result(a, read_direct(static_cast<uint16_t>(op.operand + x)), p);
+            pc = static_cast<uint16_t>(pc + 3);
+            break;
+        case CachedOpKind::AdcAbsY:
+            a = adc_result(a, read_direct(static_cast<uint16_t>(op.operand + y)), p);
+            pc = static_cast<uint16_t>(pc + 3);
+            break;
+        case CachedOpKind::AdcZpxInd: {
+            const uint8_t zp = static_cast<uint8_t>(op.operand + x);
+            const uint16_t pointer =
+                static_cast<uint16_t>((read_direct(static_cast<uint8_t>(zp + 1)) << 8) | read_direct(zp));
+            a = adc_result(a, read_direct(pointer), p);
+            pc = static_cast<uint16_t>(pc + 2);
+            break;
+        }
+        case CachedOpKind::AdcZpIndY: {
+            const uint8_t zp = static_cast<uint8_t>(op.operand);
+            const uint16_t pointer =
+                static_cast<uint16_t>((read_direct(static_cast<uint8_t>(zp + 1)) << 8) | read_direct(zp));
+            a = adc_result(a, read_direct(static_cast<uint16_t>(pointer + y)), p);
+            pc = static_cast<uint16_t>(pc + 2);
+            break;
+        }
+        case CachedOpKind::SbcZpX:
+            a = sbc_result(a, read_direct(static_cast<uint8_t>(op.operand + x)), p);
+            pc = static_cast<uint16_t>(pc + 2);
+            break;
+        case CachedOpKind::SbcAbsX:
+            a = sbc_result(a, read_direct(static_cast<uint16_t>(op.operand + x)), p);
+            pc = static_cast<uint16_t>(pc + 3);
+            break;
+        case CachedOpKind::SbcAbsY:
+            a = sbc_result(a, read_direct(static_cast<uint16_t>(op.operand + y)), p);
+            pc = static_cast<uint16_t>(pc + 3);
+            break;
+        case CachedOpKind::SbcZpxInd: {
+            const uint8_t zp = static_cast<uint8_t>(op.operand + x);
+            const uint16_t pointer =
+                static_cast<uint16_t>((read_direct(static_cast<uint8_t>(zp + 1)) << 8) | read_direct(zp));
+            a = sbc_result(a, read_direct(pointer), p);
+            pc = static_cast<uint16_t>(pc + 2);
+            break;
+        }
+        case CachedOpKind::SbcZpIndY: {
+            const uint8_t zp = static_cast<uint8_t>(op.operand);
+            const uint16_t pointer =
+                static_cast<uint16_t>((read_direct(static_cast<uint8_t>(zp + 1)) << 8) | read_direct(zp));
+            a = sbc_result(a, read_direct(static_cast<uint16_t>(pointer + y)), p);
+            pc = static_cast<uint16_t>(pc + 2);
+            break;
+        }
+        case CachedOpKind::CmpZpX:
+            p = compare_flags(p, a, read_direct(static_cast<uint8_t>(op.operand + x)));
+            pc = static_cast<uint16_t>(pc + 2);
+            break;
+        case CachedOpKind::CmpAbsX:
+            p = compare_flags(p, a, read_direct(static_cast<uint16_t>(op.operand + x)));
+            pc = static_cast<uint16_t>(pc + 3);
+            break;
+        case CachedOpKind::CmpAbsY:
+            p = compare_flags(p, a, read_direct(static_cast<uint16_t>(op.operand + y)));
+            pc = static_cast<uint16_t>(pc + 3);
+            break;
+        case CachedOpKind::CmpZpxInd: {
+            const uint8_t zp = static_cast<uint8_t>(op.operand + x);
+            const uint16_t pointer =
+                static_cast<uint16_t>((read_direct(static_cast<uint8_t>(zp + 1)) << 8) | read_direct(zp));
+            p = compare_flags(p, a, read_direct(pointer));
+            pc = static_cast<uint16_t>(pc + 2);
+            break;
+        }
+        case CachedOpKind::CmpZpIndY: {
+            const uint8_t zp = static_cast<uint8_t>(op.operand);
+            const uint16_t pointer =
+                static_cast<uint16_t>((read_direct(static_cast<uint8_t>(zp + 1)) << 8) | read_direct(zp));
+            p = compare_flags(p, a, read_direct(static_cast<uint16_t>(pointer + y)));
+            pc = static_cast<uint16_t>(pc + 2);
+            break;
+        }
+        case CachedOpKind::IncAbsX: {
+            const uint16_t address = static_cast<uint16_t>(op.operand + x);
+            const uint8_t value = static_cast<uint8_t>(read_direct(address) + 1);
+            write_direct(address, value);
+            pc = static_cast<uint16_t>(pc + 3);
+            set_zn_local(value);
+            break;
+        }
+        case CachedOpKind::DecAbsX: {
+            const uint16_t address = static_cast<uint16_t>(op.operand + x);
+            const uint8_t value = static_cast<uint8_t>(read_direct(address) - 1);
+            write_direct(address, value);
+            pc = static_cast<uint16_t>(pc + 3);
+            set_zn_local(value);
+            break;
+        }
         case CachedOpKind::Fallback:
             break;
         }
     }
 
+writeback:
     state_.a = a;
     state_.x = x;
     state_.y = y;
     state_.p = static_cast<uint8_t>(p | FLAG_U);
     state_.pc = pc;
-    result.instructions_executed += to_execute;
+    result.instructions_executed += executed;
     result.stop_pc = pc;
 }
+void Cpu6510::shift_memory(uint16_t address, ShiftKind kind, uint8_t instruction_bytes) {
+    const uint8_t value = read(address);
+    uint8_t result = 0;
+    switch (kind) {
+    case ShiftKind::Asl:
+        set_flag(FLAG_C, (value & 0x80) != 0);
+        result = static_cast<uint8_t>(value << 1);
+        break;
+    case ShiftKind::Lsr:
+        set_flag(FLAG_C, (value & 0x01) != 0);
+        result = static_cast<uint8_t>(value >> 1);
+        break;
+    case ShiftKind::Rol:
+        result = static_cast<uint8_t>((value << 1) | (flag(FLAG_C) ? 1 : 0));
+        set_flag(FLAG_C, (value & 0x80) != 0);
+        break;
+    case ShiftKind::Ror:
+        result = static_cast<uint8_t>((value >> 1) | (flag(FLAG_C) ? 0x80 : 0));
+        set_flag(FLAG_C, (value & 0x01) != 0);
+        break;
+    }
+    write(address, result);
+    state_.pc = static_cast<uint16_t>(state_.pc + instruction_bytes);
+    set_zn(result);
+}
+
 #endif
 
 uint8_t Cpu6510::fetch8() {
